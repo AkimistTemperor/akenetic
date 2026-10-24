@@ -10,6 +10,8 @@
 <meta name="apple-mobile-web-app-title" content="AKENETIC">
 <title>AKENETIC</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230c0c0c'/%3E%3Ctext x='32' y='44' font-family='monospace' font-size='34' font-weight='bold' text-anchor='middle' fill='%2316c60c'%3E%3E_%3C/text%3E%3C/svg%3E">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -259,7 +261,7 @@ async function showBanner(animated, colors = T.G) {
 async function header(animated) {
   out.innerHTML = '';
   await showBanner(animated);
-  box([`AKENETIC MOBILE v1.1 · tema: ${themeName}`, 'Toque nos botões abaixo ou digite "ajuda".']);
+  box([`AKENETIC MOBILE v${APP_VERSION} · tema: ${themeName}`, 'Toque nos botões abaixo ou digite "ajuda".']);
 }
 
 // ------------------------------------------------------------------ comandos
@@ -271,7 +273,7 @@ const HELP = [
   ['calc <conta>', 'calculadora (ex: calc 2*(3+4))'], ['dado [lados]', 'rola um dado'],
   ['piada', 'conta uma piada'], ['matrix', 'chuva de código'], ['hack', 'modo hacker de filme'],
   ['musica', 'toca uma musiquinha'], ['tema [nome]', 'verde azul roxo vermelho arcoiris'],
-  ['som on|off', 'liga/desliga sons'], ['historico', 'comandos já digitados']
+  ['som on|off', 'liga/desliga sons'], ['historico', 'comandos já digitados'], ['instalar', 'instala o app na tela inicial']
 ];
 const JOKES = [
   'Existem 10 tipos de pessoas: as que entendem binário e as que não entendem.',
@@ -456,6 +458,12 @@ async function runCommand(line) {
       soundOn = !soundOn; store.set('som', soundOn ? 'on' : 'off');
       if (soundOn) sfx('ok');
       return bot('Som ' + (soundOn ? 'ligado' : 'desligado') + '.');
+    case 'instalar':
+      if (installEvt) { const e = installEvt; installEvt = null; e.prompt(); setMode('cmd'); return; }
+      if (matchMedia('(display-mode: standalone)').matches) return bot('O AKENETIC já está instalado!');
+      return bot(/iPhone|iPad/i.test(navigator.userAgent)
+        ? 'No Safari: toque em Compartilhar (□↑) e depois em "Adicionar à Tela de Início".'
+        : 'No Chrome: toque nos ⋮ e depois em "Instalar app" ou "Adicionar à tela inicial".');
     case 'historico': case 'history':
       history.forEach((h, i) => println([String(i + 1).padStart(3) + '  ', 'DarkGray'], [h, T.T])); return;
   }
@@ -683,6 +691,54 @@ function mergeHere(name, x) {
   if (x.m === true) chat.master = name;
 }
 
+// ---------------- historico (cifrado com a chave da sala, guardado no celular)
+const histKey = () => 'hist.' + chat.K.topic;
+const loadHist = () => { try { return JSON.parse(store.get(histKey(), '[]')); } catch (e) { return []; } };
+const ddmm = d => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} ${hhmm(d)}`;
+function logTextOf(p, name) {
+  switch (String(p.t)) {
+    case 'msg': return `${name} » ${clean(p.m)}`;
+    case 'file': return `${name} » [ANEXO] ${cut(p.m, 120)}`;
+    case 'roll': { const x = normRoll(p.x); return x && `${name} rolou ${x.e}: [${x.d.join('] [')}] = ${x.r}`; }
+    case 'init': { const x = normRoll(p.x); return x && `${name} rolou iniciativa: ${x.r}`; }
+    case 'narr': return `NARRAÇÃO (${name}): ${clean(p.m)}`;
+    case 'hp': { const s = normSheet(p.x); return s && `${s.c} (${name}) ficou com vida ${s.hp}/${s.max}`; }
+    case 'join': return `** ${name} entrou **`;
+    case 'leave': return `** ${name} saiu **`;
+  }
+  return null;
+}
+async function logChat(id, when, text) {
+  if (!id || chat.logIds.has(id)) return;
+  chat.logIds.add(id);
+  const e = await protect(chat.K, `[${when}] ${text}`);
+  const h = loadHist(); h.push([id, e]);
+  while (h.length > 1000) h.shift();
+  store.set(histKey(), JSON.stringify(h));
+}
+async function showHistory(arg) {
+  const n = /^\d{1,4}$/.test(arg) ? +arg : 30;
+  const h = loadHist().slice(-n);
+  if (!h.length) return notice('nenhuma conversa salva ainda nessa sala');
+  println([`══ HISTÓRICO DA SALA (últimas ${h.length}) ══`, T.S]);
+  for (const [, e] of h) { const t = await unprotect(chat.K, e); if (t) println([t, 'DarkGray']); }
+  println(['══════════════════════════════', T.S]);
+}
+
+// aviso do sistema quando o app esta aberto mas em segundo plano
+function notify(body) {
+  if (!('Notification' in window) || Notification.permission !== 'granted' || !document.hidden) return;
+  const opts = { body, icon: 'icon-192.png', badge: 'icon-192.png', tag: 'akn-chat', renotify: true };
+  const fallback = () => { try { new Notification('AKENETIC', opts); } catch (e) {} };
+  if ('serviceWorker' in navigator && navigator.serviceWorker.controller) navigator.serviceWorker.ready.then(r => r.showNotification('AKENETIC', opts)).catch(fallback);
+  else fallback();
+}
+async function askNotifications() {
+  if (!('Notification' in window)) return notice('este navegador não tem avisos', 'Yellow');
+  const r = await Notification.requestPermission();
+  notice(r === 'granted' ? 'avisos ligados: o celular avisa quando chegar mensagem com o app em segundo plano' : 'avisos bloqueados (dá pra liberar nas configurações do navegador)', r === 'granted' ? 'Green' : 'Yellow');
+}
+
 // ---------------- recebimento
 async function handleItem(o) {
   if (!chat || o.event !== 'message' || chat.seen.has(o.id)) return;
@@ -691,8 +747,13 @@ async function handleItem(o) {
   const plain = await unprotect(chat.K, o.message);
   if (!plain) return println([`[${time}] (mensagem com outra senha, ignorada)`, 'DarkGray']);
   let p; try { p = JSON.parse(plain); } catch (e) { return; }
+  const name = cut(p.n, 16) || '???';
+  // o historico grava tambem as nossas mensagens (quando o eco volta do servidor)
+  const lt = logTextOf(p, name);
+  if (lt) await logChat(o.id, ddmm(new Date(o.time * 1000)), lt);
   if (chat.own.has(String(p.i))) return;
-  const name = cut(p.n, 16) || '???', live = chat.live, x = p.x;
+  const live = chat.live, x = p.x;
+  if (live && (p.t === 'msg' || p.t === 'file' || p.t === 'narr')) notify(`${name} mandou algo na sala ${chat.room}`);
   if (!live && !chat.hadHistory) { chat.hadHistory = true; println(['──── mensagens anteriores ────', T.S]); }
   chat.people.add(name);
   switch (String(p.t)) {
@@ -775,9 +836,10 @@ async function openChat() {
   if (pass.length < 4) return err('A senha precisa de pelo menos 4 caracteres.');
   store.set('nome', name); store.set('sala', room);
   await spin('Gerando chave secreta...', 400);
-  chat = { name, room, K: await deriveKeys(room.toLowerCase(), pass), own: new Set(), seen: new Set(), people: new Set(),
+  chat = { name, room, K: await deriveKeys(room.toLowerCase(), pass), own: new Set(), seen: new Set(), people: new Set(), logIds: new Set(),
            sheets: {}, inits: {}, mySheet: loadSheet(), master: '', blobs: {},
            live: false, hadHistory: false, err: false, chain: Promise.resolve(), es: null };
+  for (const [id] of loadHist()) chat.logIds.add(id);
   chatHeader();
   notice('conectando...', T.A);
   setMode('chat');
@@ -799,7 +861,7 @@ async function leaveChat() {
   await header(false);
 }
 async function chatHelp() {
-  const rows = [['CHAT'], ['/enviar', 'manda arquivo (ou botão 📎)'], ['/quem', 'pessoas na sala'], ['/limpar  /som', 'limpa / sons'], ['/sair', 'volta pro terminal'],
+  const rows = [['CHAT'], ['/enviar', 'manda arquivo (ou botão 📎)'], ['/quem', 'pessoas na sala'], ['/limpar  /som', 'limpa / sons'], ['/historico', 'conversas antigas'], ['/avisos', 'liga avisos de mensagem'], ['/sair', 'volta pro terminal'],
     ['RPG'], ['/r 1d20+3', 'rola dados pra todos verem'], ['/ficha', 'cria/edita sua ficha'], ['/fichas', 'ficha de todos'], ['/vida -5  +3', 'dano / cura'],
     ['/iniciativa', 'rola e mostra a ordem (+2 bônus)'], ['/mestre', 'vira o mestre'], ['/narrar txt', 'narração (mestre)'], ['/secreto 1d20', 'rolagem escondida (mestre)']];
   for (const [k, v] of rows) { if (!v) println(['══ ' + k + ' ══', T.S]); else println([k.padEnd(14), T.P], [v, T.T]); await sleep(10); }
@@ -848,6 +910,8 @@ async function chatSubmit(text) {
       return;
     case '/ficha': return newSheet();
     case '/fichas': return showSheets();
+    case '/historico': case '/history': return showHistory(arg);
+    case '/avisos': return askNotifications();
     case '/vida': {
       if (!chat.mySheet) return notice('crie sua ficha primeiro: /ficha', 'Yellow');
       const m = /^([+-]?)(\d{1,4})$/.exec(arg);
@@ -873,9 +937,10 @@ async function chatSubmit(text) {
 }
 
 // ------------------------------------------------------------------ entrada, botoes e modos
-let mode = 'cmd', busy = false, pending = null, pendingSecret = false;
+let mode = 'cmd', busy = false, pending = null, pendingSecret = false, installEvt = null;
 const CMD_CHIPS = ['ajuda', 'chat', 'matrix', 'hack', 'musica', 'dado', 'piada', 'senha', 'sistema', 'tema', 'notas', 'limpar'];
-const CHAT_CHIPS = [['📎 arquivo', '/enviar'], ['🎲 d20', '/r 1d20'], '/fichas', '/ficha', '/iniciativa', '/ajuda', '/quem', '/sair'];
+const CHAT_CHIPS = [['📎 arquivo', '/enviar'], ['🎲 d20', '/r 1d20'], '/fichas', '/ficha', '/iniciativa', '/historico', ['🔔 avisos', '/avisos'], '/ajuda', '/quem', '/sair'];
+const cmdChips = () => installEvt ? [['📲 instalar', 'instalar'], ...CMD_CHIPS] : CMD_CHIPS;
 
 function setChips(list) {
   chips.innerHTML = '';
@@ -888,7 +953,7 @@ function setChips(list) {
 }
 function setMode(m) {
   mode = m;
-  setChips(m === 'chat' ? CHAT_CHIPS : CMD_CHIPS);
+  setChips(m === 'chat' ? CHAT_CHIPS : cmdChips());
   inp.placeholder = m === 'chat' ? 'mensagem...' : 'digite um comando...';
 }
 function ask(label, def = '', secret = false) {
@@ -923,6 +988,10 @@ $('#bar').addEventListener('submit', e => { e.preventDefault(); const v = inp.va
 addEventListener('resize', () => { document.querySelectorAll('.banner').forEach(b => b.style.fontSize = bannerSize(b.parentElement)); scroll(true); });
 
 // ------------------------------------------------------------------ inicializacao
+const APP_VERSION = '1.3';
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
+addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; if (mode === 'cmd') setMode('cmd'); });
+addEventListener('appinstalled', () => { installEvt = null; if (mode === 'cmd') setMode('cmd'); });
 applyTheme();
 setMode('cmd');
 const bootBanner = makeBanner(['DarkGray', 'DarkGray', 'DarkGray', 'DarkGray', 'DarkGray', 'DarkGray'], document.body);
@@ -948,6 +1017,9 @@ $('#boot').addEventListener('click', async () => {
   await header(false);
   println(['', T.T]);
   await bot('Olá! Bem-vindo ao AKENETIC mobile.');
+  const prevVersion = store.get('versao', '');
+  if (prevVersion && prevVersion !== APP_VERSION) await bot(`Atualizado para a v${APP_VERSION}! Agora dá pra instalar como app, abre sem internet e o chat guarda histórico.`);
+  store.set('versao', APP_VERSION);
   busy = false;
 }, { once: true });
 </script>
