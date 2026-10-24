@@ -67,7 +67,11 @@
   .blink { color: var(--p); animation: blink 1.1s steps(2, start) infinite; letter-spacing: .1em; }
   @keyframes blink { to { visibility: hidden; } }
   .chip.mini { padding: 1px 10px; margin-left: 8px; font-size: 12px; }
-  img.att { display: block; max-width: min(100%, 320px); max-height: 320px; border: 1px solid var(--s); border-radius: 6px; margin: 4px 0 8px; }
+  img.att, video.att { display: block; max-width: min(100%, 320px); max-height: 320px; border: 1px solid var(--s); border-radius: 6px; margin: 4px 0 8px; background: #000; }
+  audio.att { display: block; width: min(100%, 320px); height: 40px; margin: 4px 0 8px; }
+  #typing { display: none; padding: 2px 16px 0; color: #767676; font-style: italic; font-size: 12px; }
+  #typing.on { display: block; }
+  .chip.rec { background: #c50f1f; border-color: #e74856; color: #fff; animation: blink 1s steps(2, start) infinite; }
   .narr { border-left: 3px solid #c19c00; background: rgba(193,156,0,.08); padding: 6px 10px; margin: 8px 0; }
   .aviso { border: 2px solid #f9f1a5; background: rgba(193,156,0,.12); padding: 10px 12px; margin: 10px 0; border-radius: 6px; animation: avisoPisca .35s steps(2, start) 6; }
   .aviso .t { color: #f9f1a5; font-weight: 700; display: block; margin-bottom: 6px; }
@@ -80,6 +84,7 @@
 <body>
 <div id="app">
   <div id="out"></div>
+  <div id="typing"></div>
   <div id="chips"></div>
   <form id="bar" autocomplete="off">
     <span id="ps">»</span>
@@ -524,9 +529,12 @@ async function payload(type, text = '', extra) {
   if (extra !== undefined) o.x = extra;
   return protect(chat.K, JSON.stringify(o));
 }
-async function sendChat(type, text = '', extra) {
+// noCache: o servidor nao guarda (usado no "digitando...", que nao precisa ir pro historico)
+async function sendChat(type, text = '', extra, noCache) {
   try {
-    const r = await fetch('https://ntfy.sh/' + chat.K.topic, { method: 'POST', body: await payload(type, text, extra) });
+    const opts = { method: 'POST', body: await payload(type, text, extra) };
+    if (noCache) opts.headers = { Cache: 'no' };
+    const r = await fetch('https://ntfy.sh/' + chat.K.topic, opts);
     return r.ok;
   } catch (e) { return false; }
 }
@@ -539,16 +547,38 @@ const chatLine = (time, name, text, c) => println([`[${time}] `, 'DarkGray'], [n
 // ---------------- arquivos
 const fmtSize = b => b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.ceil(b / 1024) + ' KB';
 const MIME = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', pdf: 'application/pdf',
-  mp3: 'audio/mpeg', mp4: 'video/mp4', txt: 'text/plain' };
+  mp3: 'audio/mpeg', m4a: 'audio/mp4', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg', wav: 'audio/wav', aac: 'audio/aac',
+  mp4: 'video/mp4', mov: 'video/quicktime', '3gp': 'video/3gpp', txt: 'text/plain' };
 const ext = n => (n.split('.').pop() || '').toLowerCase();
-const isImage = n => /^(jpe?g|png|gif|webp)$/.test(ext(n));
-const fileInput = el('input'); fileInput.type = 'file'; fileInput.style.display = 'none'; document.body.appendChild(fileInput);
-fileInput.onchange = () => { const f = fileInput.files[0]; fileInput.value = ''; if (f && chat) sendFile(f); };
+const KIND_ICON = { image: '🖼️', video: '🎬', audio: '🎤', file: '📎' };
+const KIND_LABEL = { image: 'FOTO', video: 'VÍDEO', audio: 'ÁUDIO', file: 'ANEXO' };
+// o tipo vem no payload (x.k); se nao vier, deduz pela extensao (mesma regra do PC)
+function fileKind(name, hint) {
+  if (KIND_ICON[hint]) return hint;
+  const e = ext(name);
+  if (/^(jpe?g|png|gif|webp|bmp|heic)$/.test(e)) return 'image';
+  if (/^(mp4|webm|mov|mkv|3gp|avi)$/.test(e)) return 'video';
+  if (/^(mp3|m4a|ogg|oga|opus|wav|aac|flac)$/.test(e)) return 'audio';
+  return 'file';
+}
+const mimeOf = (name, kind) => ext(name) === 'webm' ? (kind === 'audio' ? 'audio/webm' : 'video/webm') : (MIME[ext(name)] || 'application/octet-stream');
+const kindOfFile = f => /^image\//.test(f.type) ? 'image' : /^video\//.test(f.type) ? 'video' : /^audio\//.test(f.type) ? 'audio' : fileKind(f.name);
 
-function addImg(line, url) {
-  const img = el('img', 'att'); img.src = url; img.alt = '';
-  img.onload = () => scroll(true);
-  line.after(img);
+function makeInput(accept) {
+  const i = el('input'); i.type = 'file'; i.style.display = 'none'; if (accept) i.accept = accept;
+  i.onchange = () => { const f = i.files[0]; i.value = ''; if (f && chat) sendFile(f); };
+  document.body.appendChild(i); return i;
+}
+const fileInput = makeInput('');
+const mediaInput = makeInput('image/*,video/*');
+
+function addMedia(line, url, kind) {
+  const m = kind === 'image' ? el('img', 'att') : el(kind, 'att');
+  m.src = url;
+  if (kind !== 'image') { m.controls = true; m.preload = 'metadata'; if (kind === 'video') m.playsInline = true; }
+  m.addEventListener(kind === 'image' ? 'load' : 'loadedmetadata', () => scroll(true));
+  line.after(m);
+  return m;
 }
 async function fetchDecrypt(c, url) {
   if (c.blobs[url]) return c.blobs[url];
@@ -563,35 +593,88 @@ async function downloadFile(url, fname, btn) {
   btn.textContent = '...';
   try {
     const plain = await fetchDecrypt(c, url);
-    const a = el('a'); a.href = URL.createObjectURL(new Blob([plain], { type: MIME[ext(fname)] || 'application/octet-stream' }));
+    const a = el('a'); a.href = URL.createObjectURL(new Blob([plain], { type: mimeOf(fname, fileKind(fname)) }));
     a.download = fname; document.body.appendChild(a); a.click(); a.remove();
     btn.textContent = '✓ salvo'; sfx('ok');
   } catch (e) { btn.textContent = '⬇ baixar'; notice(e.message, 'Red'); sfx('err'); }
 }
-function fileLine(time, name, fname, size, color, url) {
-  const d = chatLine(time, name, `📎 ${fname} (${fmtSize(size)})`, color);
+// fotos e audios pequenos aparecem sozinhos; video so carrega quando tocar (economiza internet)
+function fileLine(time, name, fname, size, color, url, kind) {
+  const d = chatLine(time, name, `${KIND_ICON[kind]} ${fname} (${fmtSize(size)})`, color);
   if (!url) { d.appendChild(seg('  (indisponível)', 'DarkGray')); return; }
+  const c = chat;
+  const show = btn => fetchDecrypt(c, url)
+    .then(p => { if (chat !== c) return; if (btn) btn.remove(); addMedia(d, URL.createObjectURL(new Blob([p], { type: mimeOf(fname, kind) })), kind); })
+    .catch(e => { if (btn) { btn.textContent = '▶ ver vídeo'; notice(e.message, 'Red'); } });
+  if (kind === 'video') {
+    const v = el('button', 'chip mini', '▶ ver vídeo'); v.type = 'button';
+    v.onclick = () => { v.textContent = '...'; show(v); };
+    d.appendChild(v);
+  } else if ((kind === 'image' || kind === 'audio') && size < 5 * 1048576) show();
   const btn = el('button', 'chip mini', '⬇ baixar'); btn.type = 'button';
   btn.onclick = () => downloadFile(url, fname, btn);
   d.appendChild(btn);
-  const c = chat;
-  if (isImage(fname) && size < 5 * 1048576) {
-    fetchDecrypt(c, url).then(p => { if (chat === c) addImg(d, URL.createObjectURL(new Blob([p], { type: MIME[ext(fname)] }))); }).catch(() => {});
-  }
 }
-async function sendFile(file) {
-  if (file.size > 14 * 1048576) { notice('arquivo grande demais (máximo ~14 MB)', 'Red'); return sfx('err'); }
-  notice(`enviando ${file.name} (${fmtSize(file.size)})...`, T.A);
+async function sendFile(file, kind) {
+  kind = kind || kindOfFile(file);
+  if (file.size > 14 * 1048576) { notice('arquivo grande demais (máximo ~14 MB). Vídeos longos não cabem.', 'Red'); return sfx('err'); }
+  const status = notice(`enviando ${KIND_LABEL[kind].toLowerCase()}: ${file.name} (${fmtSize(file.size)})...`, T.A);
   try {
     const body = await protectBytes(chat.K, new Uint8Array(await file.arrayBuffer()));
-    const msg = await payload('file', file.name, { s: file.size });
+    const msg = await payload('file', file.name, { s: file.size, k: kind });
     const r = await fetch('https://ntfy.sh/' + chat.K.topic, { method: 'PUT', body, headers: { Filename: 'akn.bin', Message: msg } });
     if (!r.ok) throw new Error('servidor respondeu ' + r.status);
-    const d = chatLine(hhmm(new Date()), chat.name, `📎 ${file.name} (${fmtSize(file.size)})`, T.P);
-    if (isImage(file.name)) addImg(d, URL.createObjectURL(file));
+    status.remove();
+    const d = chatLine(hhmm(new Date()), chat.name, `${KIND_ICON[kind]} ${file.name} (${fmtSize(file.size)})`, T.P);
+    if (kind !== 'file') addMedia(d, URL.createObjectURL(file), kind);
     sfx('ok');
-  } catch (e) { notice('falha ao enviar o arquivo: ' + e.message, 'Red'); sfx('err'); }
+  } catch (e) { notice('falha ao enviar: ' + e.message, 'Red'); sfx('err'); }
 }
+
+// ---------------- gravar audio (toque em 🎤 pra comecar, toque de novo pra enviar)
+let rec = null;
+async function toggleRecording() {
+  if (rec) { if (rec.state === 'recording') rec.stop(); return; }
+  if (!navigator.mediaDevices || !window.MediaRecorder) return notice('este navegador não grava áudio', 'Yellow');
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch (e) { return notice('sem permissão pro microfone (libere nas configurações do navegador)', 'Red'); }
+  const type = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/ogg;codecs=opus'].find(t => MediaRecorder.isTypeSupported(t)) || '';
+  const r = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+  const parts = [], t0 = Date.now();
+  rec = r; setMode(mode); buzz(40); tone(880, 60);
+  const status = notice('🔴 gravando... toque em ⏹ para enviar (máx. 2 min)', 'Red');
+  const limit = setTimeout(() => r.state === 'recording' && r.stop(), 120000);
+  r.ondataavailable = e => { if (e.data.size) parts.push(e.data); };
+  r.onstop = () => {
+    clearTimeout(limit); stream.getTracks().forEach(t => t.stop());
+    rec = null; setMode(mode); status.remove(); tone(660, 60);
+    if (!chat) return;
+    if (Date.now() - t0 < 1000) return notice('áudio muito curto', 'Yellow');
+    const mime = (r.mimeType || type || 'audio/webm').split(';')[0];
+    const e = mime.includes('mp4') ? 'm4a' : mime.includes('ogg') ? 'ogg' : 'webm';
+    const d = new Date(), stamp = [d.getHours(), d.getMinutes(), d.getSeconds()].map(n => String(n).padStart(2, '0')).join('');
+    sendFile(new File(parts, `audio-${stamp}.${e}`, { type: mime }), 'audio');
+  };
+  r.start();
+}
+
+// ---------------- "fulano esta digitando..."
+const typingEl = $('#typing');
+function renderTyping() {
+  if (!chat) { typingEl.className = ''; return; }
+  const now = Date.now(), who = Object.keys(chat.typing).filter(n => chat.typing[n] > now);
+  typingEl.textContent = !who.length ? '' : who.length === 1 ? `${who[0]} está digitando...` : `${who.join(', ')} estão digitando...`;
+  typingEl.className = who.length ? 'on' : '';
+}
+setInterval(renderTyping, 1000);
+// no maximo 1 aviso a cada 8s e so com mais gente na sala (o ntfy gratis tem limite diario)
+inp.addEventListener('input', () => {
+  if (mode !== 'chat' || !chat || pending || !inp.value || inp.value.startsWith('/')) return;
+  if (!chat.people.size || Date.now() - chat.lastTyping < 8000) return;
+  chat.lastTyping = Date.now();
+  sendChat('typing', '', undefined, true);
+});
 
 // ---------------- RPG
 function rollExpr(s) {
@@ -702,7 +785,7 @@ const ddmm = d => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth()
 function logTextOf(p, name) {
   switch (String(p.t)) {
     case 'msg': return `${name} » ${clean(p.m)}`;
-    case 'file': return `${name} » [ANEXO] ${cut(p.m, 120)}`;
+    case 'file': return `${name} » [${KIND_LABEL[fileKind(clean(p.m), p.x && p.x.k)]}] ${cut(p.m, 120)}`;
     case 'roll': { const x = normRoll(p.x); return x && `${name} rolou ${x.e}: [${x.d.join('] [')}] = ${x.r}`; }
     case 'init': { const x = normRoll(p.x); return x && `${name} rolou iniciativa: ${x.r}`; }
     case 'narr': return `NARRAÇÃO (${name}): ${clean(p.m)}`;
@@ -782,18 +865,21 @@ async function handleItem(o) {
   if (lt) await logChat(o.id, ddmm(new Date(o.time * 1000)), lt);
   if (chat.own.has(String(p.i))) return;
   const live = chat.live, x = p.x;
-  if (live && (p.t === 'msg' || p.t === 'file' || p.t === 'narr')) notify(`${name} mandou algo na sala ${chat.room}`);
-  if (!live && !chat.hadHistory) { chat.hadHistory = true; println(['──── mensagens anteriores ────', T.S]); }
   chat.people.add(name);
+  if (p.t === 'typing') { if (live) { chat.typing[name] = Date.now() + 7000; renderTyping(); } return; }
+  if (p.t === 'msg' || p.t === 'file') { delete chat.typing[name]; renderTyping(); }
+  if (!live && !chat.hadHistory) { chat.hadHistory = true; println(['──── mensagens anteriores ────', T.S]); }
   switch (String(p.t)) {
     case 'msg':
       chatLine(time, name, clean(p.m), nameColor(name));
-      if (live) { sfx('msg'); buzz(60); }
+      if (live) { sfx('msg'); buzz(60); notify(`${name}: ${cut(p.m, 90)}`); }
       break;
-    case 'file':
-      fileLine(time, name, cut(p.m, 120) || 'arquivo', x ? toInt(x.s) : 0, nameColor(name), o.attachment && o.attachment.url);
-      if (live) { sfx('msg'); buzz(60); }
+    case 'file': {
+      const fname = cut(p.m, 120) || 'arquivo', kind = fileKind(fname, x && x.k);
+      fileLine(time, name, fname, x ? toInt(x.s) : 0, nameColor(name), o.attachment && o.attachment.url, kind);
+      if (live) { sfx('msg'); buzz(60); notify(`${name} mandou ${KIND_LABEL[kind].toLowerCase()} ${KIND_ICON[kind]}`); }
       break;
+    }
     case 'roll': await writeRoll(time, name, normRoll(x), nameColor(name), live); break;
     case 'init': {
       const r = normRoll(x); if (!r) break;
@@ -804,7 +890,7 @@ async function handleItem(o) {
     case 'initreset': chat.inits = {}; notice(name + ' zerou a iniciativa', T.A); break;
     case 'secret': notice(name + ' (mestre) rolou um dado em segredo...', 'DarkYellow'); if (live) tone(220, 200); break;
     case 'master': chat.master = name; notice(name + ' agora é o MESTRE da sala', 'Yellow'); if (live) play([523, 90, 784, 160]); break;
-    case 'narr': await writeNarration(clean(p.m), live); if (live) buzz(80); break;
+    case 'narr': await writeNarration(clean(p.m), live); if (live) { buzz(80); notify('📜 Narração: ' + cut(p.m, 90)); } break;
     case 'sheet':
       chat.sheets[name] = normSheet(x);
       notice(name + ' atualizou a ficha:', nameColor(name));
@@ -865,7 +951,7 @@ async function openChat() {
   if (pass.length < 4) return err('A senha precisa de pelo menos 4 caracteres.');
   store.set('nome', name); store.set('sala', room);
   await spin('Gerando chave secreta...', 400);
-  chat = { name, room, K: await deriveKeys(room.toLowerCase(), pass), own: new Set(), seen: new Set(), people: new Set(), logIds: new Set(),
+  chat = { name, room, K: await deriveKeys(room.toLowerCase(), pass), own: new Set(), seen: new Set(), people: new Set(), logIds: new Set(), typing: {}, lastTyping: 0,
            sheets: {}, inits: {}, mySheet: loadSheet(), master: '', blobs: {},
            live: false, hadHistory: false, err: false, chain: Promise.resolve(), es: null };
   for (const [id] of loadHist()) chat.logIds.add(id);
@@ -878,19 +964,20 @@ async function openChat() {
 function chatHeader() {
   out.innerHTML = '';
   showBanner(false);
-  box([`SALA: ${chat.room} · você: ${chat.name}`, 'Botões abaixo: 📎 arquivo, 🎲 dado, fichas... /ajuda mostra tudo']);
+  box([`SALA: ${chat.room} · você: ${chat.name}`, 'Botões abaixo: 📷 foto/vídeo, 🎤 áudio, 📎 arquivo, 🎲 dado... /ajuda mostra tudo']);
 }
 async function leaveChat() {
   const c = chat;
+  if (rec && rec.state === 'recording') rec.stop();
   notice('saindo da sala...');
   await sendChat('leave');
   if (c.es) c.es.close();
-  chat = null;
+  chat = null; renderTyping();
   setMode('cmd'); sfx('bye');
   await header(false);
 }
 async function chatHelp() {
-  const rows = [['CHAT'], ['/enviar', 'manda arquivo (ou botão 📎)'], ['/quem', 'pessoas na sala'], ['/limpar  /som', 'limpa / sons'], ['/historico', 'conversas antigas'], ['/avisos', 'liga avisos de mensagem'], ['/sair', 'volta pro terminal'],
+  const rows = [['CHAT'], ['/midia', 'foto ou vídeo (câmera/galeria)'], ['/audio', 'grava mensagem de voz'], ['/enviar', 'manda arquivo (ou botão 📎)'], ['/quem', 'pessoas na sala'], ['/limpar  /som', 'limpa / sons'], ['/historico', 'conversas antigas'], ['/avisos', 'liga avisos de mensagem'], ['/sair', 'volta pro terminal'],
     ['RPG'], ['/r 1d20+3', 'rola dados pra todos verem'], ['/ficha', 'cria/edita sua ficha'], ['/fichas', 'ficha de todos'], ['/vida -5  +3', 'dano / cura'],
     ['/iniciativa', 'rola e mostra a ordem (+2 bônus)'], ['/mestre', 'vira o mestre'], ['/narrar txt', 'narração (mestre)'], ['/secreto 1d20', 'rolagem escondida (mestre)']];
   for (const [k, v] of rows) { if (!v) println(['══ ' + k + ' ══', T.S]); else println([k.padEnd(14), T.P], [v, T.T]); await sleep(10); }
@@ -903,6 +990,8 @@ async function chatSubmit(text) {
   const now = hhmm(new Date()), me = chat.name, isMaster = chat.master === me;
   const usage = 'use: /r 1d20+3  (até 20 dados: 2d6, 1d100, 4d6-1)';
   if (cmd === '/enviar') return fileInput.click();
+  if (cmd === '/midia' || cmd === '/foto' || cmd === '/video') return mediaInput.click();
+  if (cmd === '/audio') return toggleRecording();
   if (!text.startsWith('/')) {
     text = text.slice(0, 1000);
     chatLine(now, me, text, T.P); scroll(true); sfx('enter');
@@ -968,14 +1057,16 @@ async function chatSubmit(text) {
 // ------------------------------------------------------------------ entrada, botoes e modos
 let mode = 'cmd', busy = false, pending = null, pendingSecret = false, installEvt = null;
 const CMD_CHIPS = ['ajuda', 'chat', 'matrix', 'hack', 'musica', 'dado', 'piada', 'senha', 'sistema', 'tema', 'notas', 'limpar'];
-const CHAT_CHIPS = [['📎 arquivo', '/enviar'], ['🎲 d20', '/r 1d20'], '/fichas', '/ficha', '/iniciativa', '/historico', ['🔔 avisos', '/avisos'], '/ajuda', '/quem', '/sair'];
+const CHAT_CHIPS = [['📷 foto/vídeo', '/midia'], ['🎤 áudio', '/audio'], ['📎 arquivo', '/enviar'], ['🎲 d20', '/r 1d20'], '/fichas', '/ficha',
+  '/iniciativa', '/historico', ['🔔 avisos', '/avisos'], '/ajuda', '/quem', '/sair'];
 const cmdChips = () => installEvt ? [['📲 instalar', 'instalar'], ...CMD_CHIPS] : CMD_CHIPS;
 
 function setChips(list) {
   chips.innerHTML = '';
   for (const c of list) {
     const [label, value] = Array.isArray(c) ? c : [c, c];
-    const b = el('button', 'chip', label); b.type = 'button';
+    const recording = value === '/audio' && rec;
+    const b = el('button', recording ? 'chip rec' : 'chip', recording ? '⏹ enviar áudio' : label); b.type = 'button';
     b.onclick = () => submit(value);
     chips.appendChild(b);
   }
@@ -1017,7 +1108,7 @@ $('#bar').addEventListener('submit', e => { e.preventDefault(); const v = inp.va
 addEventListener('resize', () => { document.querySelectorAll('.banner').forEach(b => b.style.fontSize = bannerSize(b.parentElement)); scroll(true); });
 
 // ------------------------------------------------------------------ inicializacao
-const APP_VERSION = '1.4';
+const APP_VERSION = '1.6';
 setInterval(checkAviso, 180000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) checkAviso(); });
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});

@@ -20,7 +20,7 @@ $NotesFile  = Join-Path $Root 'notas.txt'
 $ConfigFile = Join-Path $Root 'config.txt'
 # a edicao premium e liberada pelo arquivo premium.key, que o 'compartilhar' nunca copia
 $IsPremium  = Test-Path -LiteralPath (Join-Path $Root 'premium.key')
-$Version    = '1.5'
+$Version    = '1.6'
 # de onde o comando 'atualizar' baixa a versao nova (publicada pelo 'site publicar' do premium)
 $SiteBase   = 'https://akimisttemperor.github.io/akenetic/'
 $UpdateBase = "$($SiteBase)pc/"
@@ -793,6 +793,66 @@ function Format-Size([double]$b) {
     if ($b -ge 1MB) { '{0:N1} MB' -f ($b / 1MB) } else { '{0:N0} KB' -f [math]::Ceiling($b / 1KB) }
 }
 
+# tipo do anexo: o celular manda junto (x.k); se nao vier, deduz pela extensao
+function Get-FileKind([string]$name, $hint) {
+    if ($hint -in 'image', 'video', 'audio', 'file') { return $hint }
+    switch -Regex ([IO.Path]::GetExtension($name).TrimStart('.').ToLower()) {
+        '^(jpe?g|png|gif|webp|bmp|heic)$'          { 'image'; break }
+        '^(mp4|webm|mov|mkv|3gp|avi)$'             { 'video'; break }
+        '^(mp3|m4a|ogg|oga|opus|wav|aac|flac)$'    { 'audio'; break }
+        default                                    { 'file' }
+    }
+}
+$KindLabel = @{ image = '[FOTO]'; video = '[VIDEO]'; audio = '[AUDIO]'; file = '[ANEXO]' }
+
+# "digitando...": no maximo 1 aviso a cada 8s, so com mais gente na sala, sem cache
+# no servidor (nao entra no historico) e enviado em segundo plano pra nao travar a digitacao
+function Send-Typing {
+    if (-not $script:ChatPeople.Count -or ((Get-Date) - $script:LastTypingSent).TotalSeconds -lt 8) { return }
+    if ($script:TypingPs) {
+        if (-not $script:TypingHandle.IsCompleted) { return }
+        $script:TypingPs.Dispose(); $script:TypingPs = $null
+    }
+    $script:LastTypingSent = Get-Date
+    $script:TypingPs = [powershell]::Create()
+    [void]$script:TypingPs.AddScript({
+        param($u, $b)
+        try { Invoke-RestMethod -Method Post -Uri $u -Body $b -ContentType 'text/plain' -Headers @{ Cache = 'no' } -TimeoutSec 10 | Out-Null } catch {}
+    }).AddArgument("https://ntfy.sh/$($script:ChatKeys.Topic)").AddArgument((New-ChatPayload 'typing'))
+    $script:TypingHandle = $script:TypingPs.BeginInvoke()
+}
+
+function Get-TypingNames { @($script:Typing.Keys | Where-Object { $script:Typing[$_] -gt (Get-Date) } | Sort-Object) }
+
+# aviso do Windows quando chega mensagem e voce esta em outra janela
+function Test-TerminalFocused {
+    try {
+        if (-not ('AknWin.Native' -as [type])) {
+            Add-Type -Namespace AknWin -Name Native -MemberDefinition @'
+[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+'@
+        }
+        $procId = [uint32]0
+        [void][AknWin.Native]::GetWindowThreadProcessId([AknWin.Native]::GetForegroundWindow(), [ref]$procId)
+        (Get-Process -Id $procId).ProcessName -in 'WindowsTerminal', 'powershell', 'pwsh', 'conhost', 'OpenConsole', 'cmd'
+    } catch { $true }
+}
+
+function Show-DesktopNotice([string]$text) {
+    if (-not $script:ChatNotify -or (Test-TerminalFocused)) { return }
+    try {
+        if (-not $script:NotifyIcon) {
+            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+            $script:NotifyIcon = New-Object Windows.Forms.NotifyIcon
+            $script:NotifyIcon.Icon = [Drawing.SystemIcons]::Information
+            $script:NotifyIcon.Text = 'AKENETIC'
+        }
+        $script:NotifyIcon.Visible = $true
+        $script:NotifyIcon.ShowBalloonTip(5000, "AKENETIC · sala $script:ChatRoom", $text, [Windows.Forms.ToolTipIcon]::Info)
+    } catch {}
+}
+
 function Send-ChatFile([string]$path) {
     $path = $path.Trim().Trim('"')
     if (-not $path) {
@@ -811,11 +871,12 @@ function Send-ChatFile([string]$path) {
     if ($fi.Length -gt 14MB) { Write-ChatNotice 'arquivo grande demais (maximo ~14 MB)' Red; Sfx err; return }
     Write-ChatNotice ('enviando {0} ({1})...' -f $fi.Name, (Format-Size $fi.Length)) $script:T.A
     try {
+        $kind = Get-FileKind $fi.Name $null
         $body = Protect-Bytes ([IO.File]::ReadAllBytes($fi.FullName))
-        $msg  = New-ChatPayload 'file' $fi.Name @{ s = $fi.Length }
+        $msg  = New-ChatPayload 'file' $fi.Name @{ s = $fi.Length; k = $kind }
         Invoke-RestMethod -Method Put -Uri "https://ntfy.sh/$($script:ChatKeys.Topic)" -Body $body `
             -ContentType 'application/octet-stream' -Headers @{ Filename = 'akn.bin'; Message = $msg } -TimeoutSec 180 | Out-Null
-        Write-ChatLine (Get-Date -Format 'HH:mm') $script:ChatName ('[ANEXO] {0} ({1})' -f $fi.Name, (Format-Size $fi.Length)) $script:T.P
+        Write-ChatLine (Get-Date -Format 'HH:mm') $script:ChatName ('{0} {1} ({2})' -f $KindLabel[$kind], $fi.Name, (Format-Size $fi.Length)) $script:T.P
         Sfx ok
     } catch { Write-ChatNotice "falha ao enviar: $($_.Exception.Message)" Red; Sfx err }
 }
@@ -884,9 +945,16 @@ function Clear-InputLine { Write-Host ("`r" + (' ' * ([Console]::WindowWidth - 1
 
 function Draw-Input {
     Clear-InputLine
-    $max = [Console]::WindowWidth - 8
+    $who = @(Get-TypingNames)
+    $script:TypingShown = $who.Count
+    $prefix = ''
+    if ($who.Count -eq 1) { $prefix = "  [$($who[0]) digitando...]" }
+    elseif ($who.Count -gt 1) { $prefix = "  [$($who -join ', ') digitando...]" }
+    $script:InputPrefixLen = $prefix.Length
+    $max = [Console]::WindowWidth - 8 - $prefix.Length
     $shown = $script:ChatBuf
     if ($shown.Length -gt $max) { $shown = '...' + $shown.Substring($shown.Length - $max + 3) }
+    if ($prefix) { Write-Host $prefix -NoNewline -ForegroundColor DarkGray }
     Write-Host '  » ' -NoNewline -ForegroundColor $script:T.P
     Write-Host $shown -NoNewline -ForegroundColor White
 }
@@ -1070,7 +1138,7 @@ function Handle-ChatItem([string]$raw) {
     # o historico grava tambem as nossas mensagens (quando o eco volta do servidor)
     $logText = switch ([string]$p.t) {
         'msg'   { "$name » $(Clean ([string]$p.m))" }
-        'file'  { "$name » [ANEXO] $(Cut ([string]$p.m) 120)" }
+        'file'  { "$name » $($KindLabel[(Get-FileKind ([string]$p.m) $p.x.k)]) $(Cut ([string]$p.m) 120)" }
         'roll'  { $x = Normalize-Roll $p.x; if ($x) { "$name rolou $($x.e): [$($x.d -join '] [')] = $($x.r)" } }
         'init'  { $x = Normalize-Roll $p.x; if ($x) { "$name rolou iniciativa: $($x.r)" } }
         'narr'  { "NARRACAO ($name): $(Clean ([string]$p.m))" }
@@ -1087,18 +1155,27 @@ function Handle-ChatItem([string]$raw) {
         Write-Host '  ────────── mensagens anteriores ──────────' -ForegroundColor $script:T.S
     }
     $script:ChatPeople[$name] = $true
+    if ($p.t -in 'msg', 'file') { $script:Typing.Remove($name) }
     switch ([string]$p.t) {
+        'typing' { if ($live) { $script:Typing[$name] = (Get-Date).AddSeconds(7) } }
         'msg' {
-            Write-ChatLine $time $name (Clean ([string]$p.m)) (Name-Color $name)
-            if ($live) { Play 1319,45,1760,70 }
+            $m = Clean ([string]$p.m)
+            Write-ChatLine $time $name $m (Name-Color $name)
+            if ($live) { Play 1319,45,1760,70; Show-DesktopNotice "$($name): $(Cut $m 120)" }
         }
         'file' {
             $fname = Cut ([string]$p.m) 120; $size = 0; if ($p.x) { $size = [long]$p.x.s }
-            Write-ChatLine $time $name ('[ANEXO] {0} ({1})' -f $fname, (Format-Size $size)) (Name-Color $name)
+            $kind = Get-FileKind $fname $p.x.k
+            Write-ChatLine $time $name ('{0} {1} ({2})' -f $KindLabel[$kind], $fname, (Format-Size $size)) (Name-Color $name)
             if (-not $o.attachment) { Write-ChatNotice 'anexo indisponivel'; break }
             if ($live) {
                 $err = Save-ChatFile $o.attachment.url $fname
-                if ($err) { Write-ChatNotice $err Red } else { Write-ChatNotice "salvo em $script:ChatLastFile   (/abrir abre a pasta)" Green; Play 1319,45,1760,70 }
+                if ($err) { Write-ChatNotice $err Red }
+                else {
+                    Write-ChatNotice "salvo em $script:ChatLastFile   (/ver abre, /abrir abre a pasta)" Green
+                    Play 1319,45,1760,70
+                    Show-DesktopNotice "$name mandou $($KindLabel[$kind].Trim('[]').ToLower()): $fname"
+                }
             } else {
                 $script:ChatPendingFiles.Add(@{ u = $o.attachment.url; n = $fname })
                 Write-ChatNotice 'arquivo antigo: digite /baixar para salvar'
@@ -1117,7 +1194,7 @@ function Handle-ChatItem([string]$raw) {
         'initreset' { $script:Inits = @{}; Write-ChatNotice "$name zerou a iniciativa" $script:T.A }
         'secret' { Write-ChatNotice "$name (mestre) rolou um dado em segredo..." DarkYellow; if ($live) { Play 220,200 } }
         'master' { $script:ChatMaster = $name; Write-ChatNotice "$name agora e o MESTRE da sala" Yellow; if ($live) { Play 523,90,784,160 } }
-        'narr'   { Write-Narration (Clean ([string]$p.m)) $live }
+        'narr'   { Write-Narration (Clean ([string]$p.m)) $live; if ($live) { Show-DesktopNotice "Narracao do mestre: $(Cut ([string]$p.m) 120)" } }
         'sheet'  {
             $script:Sheets[$name] = Normalize-Sheet $p.x
             Write-ChatNotice "$name atualizou a ficha:" (Name-Color $name)
@@ -1178,7 +1255,9 @@ function Chat-Help {
         @('CHAT', ''),
         @('/enviar [arquivo]', 'manda arquivo (sem nome abre a janela, ou arraste)'),
         @('/baixar', 'salva os arquivos antigos da sala'),
+        @('/ver', 'abre o ultimo arquivo recebido (foto, video, audio)'),
         @('/abrir', 'abre a pasta Recebidos'),
+        @('/avisos', 'liga/desliga avisos do Windows'),
         @('/quem  /limpar  /som', 'pessoas na sala / limpa / sons'),
         @('/historico [n]', 'conversas antigas salvas no pendrive'),
         @('/sair', 'volta pro terminal'),
@@ -1232,6 +1311,19 @@ function Chat-Command([string]$text) {
         '^/abrir$' {
             $dir = "$Drive\Recebidos"
             if (Test-Path -LiteralPath $dir) { Start-Process explorer.exe $dir } else { Write-ChatNotice 'voce ainda nao recebeu arquivos' }
+            break
+        }
+        '^/ver$' {
+            $f = $script:ChatLastFile
+            if (-not $f -or -not (Test-Path -LiteralPath $f)) { Write-ChatNotice 'nenhum arquivo recebido nesta sessao'; break }
+            # so abre direto o que nao executa nada; o resto fica pra voce abrir na pasta
+            if ((Get-FileKind $f $null) -ne 'file' -or $f -match '\.(pdf|txt)$') { Start-Process -FilePath $f; Write-ChatNotice "abrindo $([IO.Path]::GetFileName($f))..." $script:T.A }
+            else { Write-ChatNotice 'por seguranca esse tipo nao abre direto. Use /abrir e veja na pasta.' Yellow }
+            break
+        }
+        '^/avisos$' {
+            $script:ChatNotify = -not $script:ChatNotify
+            Write-ChatNotice "avisos do Windows $(if ($script:ChatNotify) {'ligados (quando voce estiver em outra janela)'} else {'desligados'})" $script:T.A
             break
         }
         '^/(rolar|r)$' {
@@ -1324,6 +1416,12 @@ function Open-ChatRoom {
     $script:ChatHadHistory   = $false
     $script:ChatExit         = $false
     $script:ChatBuf          = ''
+    $script:Typing           = @{}
+    $script:TypingShown      = 0
+    $script:InputPrefixLen   = 0
+    $script:LastTypingSent   = [DateTime]::MinValue
+    $script:TypingPs         = $null
+    $script:ChatNotify       = $true
     Open-ChatLog
 
     $queue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[string]'
@@ -1345,7 +1443,11 @@ function Open-ChatRoom {
             while ($queue.TryDequeue([ref]$item)) { Handle-ChatItem $item }
             Draw-Input
         }
-        if (-not [Console]::KeyAvailable) { Start-Sleep -Milliseconds 30; continue }
+        if (-not [Console]::KeyAvailable) {
+            # some com o "digitando..." quando expira
+            if ((Get-TypingNames).Count -ne $script:TypingShown) { Draw-Input }
+            Start-Sleep -Milliseconds 30; continue
+        }
 
         $k = [Console]::ReadKey($true)
         if ($k.Key -eq 'Enter') {
@@ -1362,13 +1464,16 @@ function Open-ChatRoom {
         elseif ($k.Key -eq 'Escape') { $script:ChatBuf = ''; Draw-Input }
         elseif (-not [char]::IsControl($k.KeyChar) -and $script:ChatBuf.Length -lt 1000) {
             $script:ChatBuf += $k.KeyChar
-            if ($script:ChatBuf.Length -lt [Console]::WindowWidth - 8) { Write-Host $k.KeyChar -NoNewline -ForegroundColor White }
+            if ($script:InputPrefixLen + $script:ChatBuf.Length -lt [Console]::WindowWidth - 8) { Write-Host $k.KeyChar -NoNewline -ForegroundColor White }
             else { Draw-Input }
+            if (-not $script:ChatBuf.StartsWith('/')) { Send-Typing }
         }
     }
 
     Clear-InputLine
     Write-ChatNotice 'saindo da sala...'
+    if ($script:NotifyIcon) { $script:NotifyIcon.Dispose(); $script:NotifyIcon = $null }
+    if ($script:TypingPs) { try { $script:TypingPs.Dispose() } catch {}; $script:TypingPs = $null }
     [void](Send-Chat 'leave')
     $state.Stop = $true
     try { if ($state.Req) { $state.Req.Abort() } } catch {}
