@@ -268,7 +268,7 @@ if ($IsPremium) {
     $Commands.Insert($Commands.Count - 1, 'site publicar [msg]', '[PREMIUM] envia D:\Celular\index.html pro GitHub')
     $Commands.Insert($Commands.Count - 1, 'site config', '[PREMIUM] configura o token do GitHub')
     $Commands.Insert($Commands.Count - 1, 'site abrir', '[PREMIUM] abre o site no navegador')
-    $Commands.Insert($Commands.Count - 1, 'aviso [3d] <texto>', '[PREMIUM] aviso geral pra celulares e pendrives')
+    $Commands.Insert($Commands.Count - 1, 'aviso <texto>', '[PREMIUM] aviso geral (aviso 2d texto = vale 2 dias)')
     $Commands.Insert($Commands.Count - 1, 'aviso apagar', '[PREMIUM] tira o aviso do ar')
     $Commands['tema <nome>'] = 'verde | azul | roxo | vermelho | arcoiris | ouro'
 }
@@ -1677,8 +1677,13 @@ function Aviso([string]$arg) {
         $obj = [ordered]@{ id = "$now"; texto = ''; data = $now; ate = 0 }
         $what = 'Aviso removido'
     } else {
-        $dias = 7; if ($arg -match '^(\d{1,2})d\s+(.+)$') { $dias = [math]::Max(1, [int]$Matches[1]); $arg = $Matches[2] }
+        $dias = 7
+        if ($arg -match '^\[?(\d{1,2})d\]?(\s+(.*))?$') { $dias = [math]::Max(1, [int]$Matches[1]); $arg = $Matches[3] }
         $texto = Cut $arg 500
+        if ($texto.Length -lt 3 -or $texto -match '^<?texto>?$') {
+            Err 'Escreva o aviso depois do comando. Ex: aviso Sessao de RPG hoje as 20h!   ou   aviso 2d Manutencao amanha'
+            return
+        }
         $obj = [ordered]@{ id = "$now"; texto = $texto; data = $now; ate = $now + $dias * 86400 }
         Show-Aviso $obj -Quiet
         Write-Host "  Vale por $dias dia(s). Enviar para TODOS os celulares e pendrives? (s/n): " -NoNewline -ForegroundColor Yellow
