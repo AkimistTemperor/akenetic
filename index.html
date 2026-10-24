@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="theme-color" content="#0c0c0c">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="AKENETIC">
+<title>AKENETIC</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230c0c0c'/%3E%3Ctext x='32' y='44' font-family='monospace' font-size='34' font-weight='bold' text-anchor='middle' fill='%2316c60c'%3E%3E_%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root { --p: #16c60c; --s: #13a10e; --a: #61d6d6; --t: #cccccc; --bg: #0c0c0c; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--t); }
+  body {
+    font-family: 'JetBrains Mono', 'Cascadia Mono', Consolas, 'Courier New', monospace;
+    font-size: 13px; line-height: 1.45; overflow: hidden;
+  }
+  #app { display: flex; flex-direction: column; height: 100dvh; padding-top: env(safe-area-inset-top); }
+  #out {
+    flex: 1; overflow-y: auto; padding: 12px 16px 8px; white-space: pre-wrap; word-break: break-word;
+    overscroll-behavior: contain;
+  }
+  .ln { min-height: 1.45em; }
+  .banner { white-space: pre; line-height: 1; text-align: center; margin: 10px 0 12px; overflow: hidden; }
+  .bcol { display: inline-flex; flex-direction: column; will-change: transform; }
+  .bcol span { white-space: pre; display: block; }
+  .splash { display: flex; flex-direction: column; justify-content: center; }
+  .box { border: 3px double var(--s); padding: 6px 10px; margin: 6px auto; max-width: 30em; }
+  .center { text-align: center; }
+  #chips {
+    display: flex; gap: 6px; overflow-x: auto; padding: 6px 12px; scrollbar-width: none;
+    border-top: 1px solid #222;
+  }
+  #chips::-webkit-scrollbar { display: none; }
+  .chip {
+    flex: none; font: inherit; color: var(--p); background: transparent; border: 1px solid var(--s);
+    border-radius: 999px; padding: 6px 12px; cursor: pointer;
+  }
+  .chip:active { background: var(--s); color: var(--bg); }
+  #bar {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px calc(8px + env(safe-area-inset-bottom));
+    background: #111;
+  }
+  #ps { color: var(--p); font-weight: 700; }
+  #in {
+    flex: 1; min-width: 0; font: inherit; font-size: 16px; color: #f2f2f2; background: transparent;
+    border: none; outline: none; caret-color: var(--p);
+  }
+  #in::placeholder { color: #555; }
+  #send {
+    font: inherit; font-size: 16px; color: var(--bg); background: var(--p); border: none; border-radius: 8px;
+    width: 42px; height: 36px; cursor: pointer;
+  }
+  #boot {
+    position: fixed; inset: 0; background: var(--bg); display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 24px; cursor: pointer; z-index: 5; padding: 16px;
+  }
+  #boot .banner { color: #333; }
+  .blink { color: var(--p); animation: blink 1.1s steps(2, start) infinite; letter-spacing: .1em; }
+  @keyframes blink { to { visibility: hidden; } }
+  #matrix { position: fixed; inset: 0; display: none; z-index: 10; background: #000; }
+  #matrixHint { position: fixed; bottom: 24px; left: 0; right: 0; text-align: center; color: #555; z-index: 11; display: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="out"></div>
+  <div id="chips"></div>
+  <form id="bar" autocomplete="off">
+    <span id="ps">»</span>
+    <input id="in" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="send" placeholder="digite um comando...">
+    <button id="send" type="submit" aria-label="Enviar">↵</button>
+  </form>
+</div>
+<div id="boot"><div id="bootBanner"></div><div class="blink">[ TOQUE PARA LIGAR ]</div></div>
+<canvas id="matrix"></canvas>
+<div id="matrixHint">toque para sair</div>
+
+<script>
+'use strict';
+// ------------------------------------------------------------------ cores e temas (mesmos do PC)
+const C = {
+  Black: '#0c0c0c', DarkBlue: '#0037da', DarkGreen: '#13a10e', DarkCyan: '#3a96dd', DarkRed: '#c50f1f',
+  DarkMagenta: '#881798', DarkYellow: '#c19c00', Gray: '#cccccc', DarkGray: '#767676', Blue: '#3b78ff',
+  Green: '#16c60c', Cyan: '#61d6d6', Red: '#e74856', Magenta: '#b4009e', Yellow: '#f9f1a5', White: '#f2f2f2'
+};
+const THEMES = {
+  verde:    { P: 'Green',   S: 'DarkGreen',   A: 'Cyan',   T: 'Gray', G: ['White', 'Green', 'Green', 'DarkGreen', 'DarkGreen', 'DarkGray'] },
+  azul:     { P: 'Cyan',    S: 'DarkCyan',    A: 'Yellow', T: 'Gray', G: ['White', 'Cyan', 'Cyan', 'DarkCyan', 'Blue', 'DarkBlue'] },
+  roxo:     { P: 'Magenta', S: 'DarkMagenta', A: 'Cyan',   T: 'Gray', G: ['White', 'Magenta', 'Magenta', 'DarkMagenta', 'DarkMagenta', 'DarkBlue'] },
+  vermelho: { P: 'Red',     S: 'DarkRed',     A: 'Yellow', T: 'Gray', G: ['Yellow', 'Yellow', 'Red', 'Red', 'DarkRed', 'DarkRed'] },
+  arcoiris: { P: 'Yellow',  S: 'Magenta',     A: 'Cyan',   T: 'Gray', G: ['Red', 'Yellow', 'Green', 'Cyan', 'Blue', 'Magenta'] }
+};
+
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('akn.' + k); return v === null ? d : v; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem('akn.' + k, v); } catch (e) {} }
+};
+
+let themeName = THEMES[store.get('tema', 'verde')] ? store.get('tema', 'verde') : 'verde';
+let T = THEMES[themeName];
+let soundOn = store.get('som', 'on') !== 'off';
+const history = [];
+
+const $ = s => document.querySelector(s);
+const out = $('#out'), inp = $('#in'), chips = $('#chips');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const col = c => C[c] || c;
+
+function applyTheme() {
+  const r = document.documentElement.style;
+  r.setProperty('--p', col(T.P)); r.setProperty('--s', col(T.S)); r.setProperty('--a', col(T.A)); r.setProperty('--t', col(T.T));
+}
+
+// ------------------------------------------------------------------ sons (bipes estilo Console.Beep)
+let ac = null;
+function audio() {
+  if (!ac) { try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+  if (ac && ac.state === 'suspended') ac.resume();
+  return ac;
+}
+function tone(freq, ms, when = 0, vol = 0.05) {
+  if (!soundOn) return;
+  const a = audio(); if (!a) return;
+  const t = a.currentTime + when, o = a.createOscillator(), g = a.createGain();
+  o.type = 'square'; o.frequency.value = freq;
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + ms / 1000);
+  o.connect(g).connect(a.destination); o.start(t); o.stop(t + ms / 1000 + 0.02);
+}
+function play(seq) {
+  let t = 0;
+  for (let i = 0; i < seq.length; i += 2) { if (seq[i]) tone(seq[i], seq[i + 1], t / 1000); t += seq[i + 1]; }
+  return sleep(soundOn ? t : 0);
+}
+const SFX = {
+  enter: [1400, 18], tick: [2200, 10], ok: [880, 50, 1320, 70], err: [330, 110, 220, 200],
+  boot: [523, 90, 659, 90, 784, 90, 1047, 220], bye: [1047, 90, 784, 90, 659, 90, 523, 260],
+  alarm: [1500, 60, 1000, 60, 1500, 60, 1000, 60], msg: [1319, 45, 1760, 70],
+  join: [784, 60, 1047, 90], leave: [1047, 60, 784, 90]
+};
+const sfx = n => play(SFX[n]);
+const buzz = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch (e) {} };
+
+// ------------------------------------------------------------------ saida de texto
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function seg(text, c) { const s = el('span', null, text); s.style.color = col(c); return s; }
+function nearBottom() { return out.scrollHeight - out.scrollTop - out.clientHeight < 80; }
+function scroll(force) { if (force || nearBottom()) out.scrollTop = out.scrollHeight; }
+function println(...parts) {
+  const d = el('div', 'ln');
+  for (const [t, c] of parts) d.appendChild(seg(t, c));
+  const stick = nearBottom(); out.appendChild(d); scroll(stick); return d;
+}
+async function typeOut(text, c = T.T, delay = 14, prefix) {
+  const d = el('div', 'ln');
+  if (prefix) for (const [t, pc] of prefix) d.appendChild(seg(t, pc));
+  const s = seg('', c); d.appendChild(s); out.appendChild(d); scroll(true);
+  for (const ch of text) { s.textContent += ch; if (ch !== ' ') { scroll(); await sleep(delay); } }
+  return d;
+}
+const bot = msg => typeOut(msg, T.T, 14, [['AKENETIC » ', T.P]]);
+function err(msg) { println(['[!] ', 'Red'], [msg, 'DarkRed']); sfx('err'); buzz(80); }
+function box(lines) {
+  const b = el('div', 'box'); b.style.borderColor = col(T.S);
+  for (const l of lines) b.appendChild(seg(l, T.T));
+  [...b.children].forEach(c => c.style.display = 'block');
+  out.appendChild(b); scroll(true); return b;
+}
+async function bar(label, ms = 600, width = 14) {
+  const d = println([label.padEnd(14), T.T]);
+  const f = seg('', T.P), r = seg('', 'DarkGray'), p = seg('', T.A);
+  d.append(seg('[', T.S), f, r, seg(']', T.S), p);
+  for (let i = 0; i <= width; i++) {
+    f.textContent = '█'.repeat(i); r.textContent = '░'.repeat(width - i);
+    p.textContent = ' ' + String(Math.round(i * 100 / width)).padStart(3) + '%';
+    await sleep(ms / width);
+  }
+  d.append(seg(' OK', 'Green')); sfx('tick');
+}
+async function spin(label, ms = 800) {
+  const fr = ['|', '/', '-', '\\'], d = println(['', T.A]), s = d.firstChild;
+  const end = Date.now() + ms; let i = 0;
+  while (Date.now() < end) { s.textContent = fr[i++ % 4] + ' ' + label; await sleep(80); }
+  s.textContent = '√ ' + label; s.style.color = C.Green;
+}
+async function meter(label, used, total, unit) {
+  const pct = total > 0 ? used / total : 0, n = Math.round(pct * 14);
+  const c = pct > 0.85 ? 'Red' : pct > 0.6 ? 'Yellow' : 'Green';
+  const d = println([label.padEnd(10), T.A]), f = seg('', c), r = seg('', 'DarkGray');
+  d.append(f, r);
+  for (let k = 0; k <= n; k++) { f.textContent = '█'.repeat(k); r.textContent = '░'.repeat(14 - k); await sleep(14); }
+  d.append(seg(` ${used.toFixed(1)}/${total.toFixed(1)} ${unit} (${Math.round(pct * 100)}%)`, T.T));
+}
+
+// ------------------------------------------------------------------ banner em ondas
+const FONT = {
+  A: [' █████╗ ', '██╔══██╗', '███████║', '██╔══██║', '██║  ██║', '╚═╝  ╚═╝'],
+  K: ['██╗  ██╗', '██║ ██╔╝', '█████╔╝ ', '██╔═██╗ ', '██║  ██╗', '╚═╝  ╚═╝'],
+  E: ['███████╗', '██╔════╝', '█████╗  ', '██╔══╝  ', '███████╗', '╚══════╝'],
+  N: ['███╗   ██╗', '████╗  ██║', '██╔██╗ ██║', '██║╚██╗██║', '██║ ╚████║', '╚═╝  ╚═══╝'],
+  T: ['████████╗', '╚══██╔══╝', '   ██║   ', '   ██║   ', '   ██║   ', '   ╚═╝   '],
+  I: ['██╗', '██║', '██║', '██║', '██║', '╚═╝'],
+  C: [' ██████╗', '██╔════╝', '██║     ', '██║     ', '╚██████╗', ' ╚═════╝']
+};
+const BANNER = [0, 1, 2, 3, 4, 5].map(r => [...'AKENETIC'].map(ch => FONT[ch][r]).join(''));
+const BW = BANNER[0].length;
+
+function bannerSize(container) {
+  const w = (container.clientWidth || innerWidth) - 8;
+  return Math.max(5, Math.min(15, w / (BW * 0.62))) + 'px';
+}
+function makeBanner(colors, container) {
+  const wrap = el('div', 'banner'); wrap.style.fontSize = bannerSize(container || out);
+  const cols = [];
+  for (let x = 0; x < BW; x++) {
+    const c = el('span', 'bcol');
+    for (let r = 0; r < 6; r++) c.appendChild(seg(BANNER[r][x], colors[r]));
+    wrap.appendChild(c); cols.push(c);
+  }
+  wrap.cols = cols;
+  return wrap;
+}
+// letras entram ondulando da esquerda, a onda acalma e um brilho atravessa o nome
+async function waveBanner(wrap, colors) {
+  const cols = wrap.cols, frames = 48, amp = 1.3;
+  for (let f = 0; f <= frames; f++) {
+    const a = amp * (1 - f / frames), reveal = BW * f / (frames * 0.6);
+    cols.forEach((c, x) => {
+      c.style.opacity = x < reveal ? 1 : 0;
+      c.style.transform = `translateY(${(a * Math.sin(x * 0.22 - f * 0.5)).toFixed(3)}em)`;
+    });
+    if (f % 4 === 0) tone(500 + f * 25, 12);
+    await sleep(26);
+  }
+  for (let s = -6; s <= BW + 6; s += 2) {
+    cols.forEach((c, x) => [...c.children].forEach((ch, r) => {
+      ch.style.color = (x >= s - 3 + r && x < s + 3 + r) ? C.White : col(colors[r]);
+    }));
+    await sleep(14);
+  }
+  play([1047, 40, 1568, 90]);
+}
+async function showBanner(animated, colors = T.G) {
+  const b = makeBanner(colors);
+  if (animated) b.cols.forEach(c => c.style.opacity = 0);
+  out.appendChild(b); scroll(true);
+  if (animated) await waveBanner(b, colors);
+  return b;
+}
+async function header(animated) {
+  out.innerHTML = '';
+  await showBanner(animated);
+  box([`AKENETIC MOBILE v1.1 · tema: ${themeName}`, 'Toque nos botões abaixo ou digite "ajuda".']);
+}
+
+// ------------------------------------------------------------------ comandos
+const HELP = [
+  ['ajuda', 'mostra esta lista'], ['limpar', 'limpa a tela'], ['hora', 'data e hora'],
+  ['sistema', 'informações do celular'], ['chat', 'conversa com outros AKENETIC (PC ou celular)'],
+  ['senha [tam]', 'gera uma senha forte e copia'], ['nota <texto>', 'salva uma anotação'],
+  ['notas', 'mostra suas anotações'], ['apagar-notas', 'apaga suas anotações'],
+  ['calc <conta>', 'calculadora (ex: calc 2*(3+4))'], ['dado [lados]', 'rola um dado'],
+  ['piada', 'conta uma piada'], ['matrix', 'chuva de código'], ['hack', 'modo hacker de filme'],
+  ['musica', 'toca uma musiquinha'], ['tema [nome]', 'verde azul roxo vermelho arcoiris'],
+  ['som on|off', 'liga/desliga sons'], ['historico', 'comandos já digitados']
+];
+const JOKES = [
+  'Existem 10 tipos de pessoas: as que entendem binário e as que não entendem.',
+  'Qual é o café preferido do programador? Java.',
+  'Por que o computador foi preso? Porque executou um comando ilegal.',
+  'O que o pendrive disse pro PC? "Me tira daqui que eu tô sem espaço!"',
+  'Qual é a cobra favorita do programador? O Python.',
+  'O Wi-Fi caiu. Tive que conversar com minha família. Parecem pessoas legais.',
+  'Meu código não funciona e eu não sei por quê. Meu código funciona e eu também não sei por quê.',
+  'Por que o programador usa óculos? Porque ele não consegue C#.'
+];
+const pick = a => a[Math.floor(Math.random() * a.length)];
+
+async function showHelp() {
+  println(['══ COMANDOS ══════════════════', T.S]);
+  for (const [k, v] of HELP) { println([k.padEnd(14), T.P], [v, T.T]); await sleep(16); }
+  println(['══════════════════════════════', T.S]);
+  println(['Você também pode conversar: "oi", "tudo bem?"', 'DarkGray']);
+}
+
+function chatbot(l) {
+  if (/^(oi|ola|olá|eai|eae|salve|hey|hello|hi|bom dia|boa tarde|boa noite)\b/.test(l)) return pick(['Olá! Pronto pra uns comandos?', 'Salve! O que vamos fazer hoje?', 'E aí! Digite ajuda se precisar.']);
+  if (/tudo bem|como vai|como voce esta|como você está|como vc ta/.test(l)) return 'Tudo ótimo aqui dentro do celular! E com você?';
+  if (/quem (e|é) (voce|você|vc)|seu nome/.test(l)) return 'Sou o AKENETIC, versão de bolso.';
+  if (/obrigad|valeu|vlw/.test(l)) return 'Por nada! Tamo junto.';
+  if (/^(tchau|flw|falou)/.test(l)) return 'Até mais!';
+  return null;
+}
+
+async function system() {
+  await spin('Lendo informações do aparelho...', 700);
+  const ua = navigator.userAgent;
+  const os = /Android/i.test(ua) ? 'Android' : /iPhone|iPad/i.test(ua) ? 'iOS' : /Windows/i.test(ua) ? 'Windows' : 'Outro';
+  const info = [
+    ['Sistema', os], ['Tela', `${screen.width}x${screen.height} (${devicePixelRatio || 1}x)`],
+    ['Idioma', navigator.language], ['Núcleos', String(navigator.hardwareConcurrency || '?')],
+    ['Internet', navigator.onLine ? 'conectado' + (navigator.connection && navigator.connection.effectiveType ? ' (' + navigator.connection.effectiveType + ')' : '') : 'offline']
+  ];
+  if (navigator.deviceMemory) info.push(['Memória', '~' + navigator.deviceMemory + ' GB']);
+  for (const [k, v] of info) println([k.padEnd(10), T.A], [v, T.T]);
+  if (navigator.getBattery) {
+    try { const b = await navigator.getBattery(); await meter('Bateria', b.level * 100, 100, '%' + (b.charging ? ' ⚡' : '')); } catch (e) {}
+  }
+  sfx('ok');
+}
+
+async function dice(arg) {
+  const sides = /^\d+$/.test(arg) && +arg >= 2 ? +arg : 6;
+  const d = println(['', T.S]), s = d.firstChild;
+  for (let i = 0; i < 14; i++) {
+    s.textContent = `Rolando d${sides}...  [ ${String(1 + Math.floor(Math.random() * sides)).padStart(3)} ]`;
+    sfx('tick'); await sleep(30 + i * 12);
+  }
+  s.textContent = `Resultado d${sides}:  [ ${String(1 + Math.floor(Math.random() * sides)).padStart(3)} ]`;
+  s.style.color = col(T.A); sfx('ok'); buzz(40);
+}
+
+async function genPassword(arg) {
+  const n = /^\d+$/.test(arg) ? Math.min(64, Math.max(8, +arg)) : 16;
+  const cs = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%&*?-_';
+  const r = crypto.getRandomValues(new Uint32Array(n));
+  const pw = [...r].map(v => cs[v % cs.length]).join('');
+  await typeOut(pw, T.A, 20);
+  try { await navigator.clipboard.writeText(pw); bot('Copiada! É só colar onde precisar.'); } catch (e) { bot('Segure o dedo na senha para copiar.'); }
+  sfx('ok');
+}
+
+function notes() { try { return JSON.parse(store.get('notas', '[]')); } catch (e) { return []; } }
+
+async function matrix() {
+  const cv = $('#matrix'), hint = $('#matrixHint'), ctx = cv.getContext('2d');
+  const dpr = devicePixelRatio || 1, W = innerWidth, H = innerHeight;
+  cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cv.style.display = 'block'; hint.style.display = 'block';
+  const fs = 15, n = Math.ceil(W / fs), y = Array.from({ length: n }, () => -Math.random() * 40);
+  const glyphs = '0123456789ABCDEFXZ$#@%&*+=<>?:アイウエオカキクケコサシスセソ';
+  let stop = false; const end = Date.now() + 30000;
+  cv.onclick = () => stop = true;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  while (!stop && Date.now() < end) {
+    ctx.fillStyle = 'rgba(0,0,0,0.09)'; ctx.fillRect(0, 0, W, H);
+    ctx.font = fs + 'px monospace';
+    for (let i = 0; i < n; i++) {
+      if (y[i] > 0) {
+        ctx.fillStyle = col(T.P); ctx.fillText(pick(glyphs), i * fs, (y[i] - 1) * fs);
+        ctx.fillStyle = C.White; ctx.fillText(pick(glyphs), i * fs, y[i] * fs);
+      }
+      if (y[i] * fs > H && Math.random() > 0.97) y[i] = 0;
+      y[i]++;
+    }
+    if (Math.random() < 0.2) tone(2500 + Math.random() * 1500, 8);
+    await sleep(45);
+  }
+  cv.style.display = 'none'; hint.style.display = 'none'; cv.onclick = null;
+  await header(true);
+}
+
+async function hack() {
+  await typeOut('>> Iniciando protocolo de invasão...', 'Green', 18);
+  await bar('Firewall', 700); await bar('Senhas', 900); await bar('Arquivos', 800);
+  for (let i = 0; i < 24; i++) {
+    const bytes = [...crypto.getRandomValues(new Uint8Array(8))].map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+    println([`0x${(Math.random() * 0xffffffff >>> 0).toString(16).toUpperCase().padStart(8, '0')}  ${bytes}`, i % 2 ? 'DarkGreen' : 'Green']);
+    if (i % 3 === 0) sfx('tick');
+    await sleep(25);
+  }
+  const b = box(['*** ACESSO CONCEDIDO ***']); b.classList.add('center');
+  for (let i = 0; i < 6; i++) {
+    const c = i % 2 ? C.Green : C.DarkGreen;
+    b.style.borderColor = c; b.firstChild.style.color = c;
+    tone(1047, 70); buzz(30); await sleep(160);
+  }
+  sfx('alarm');
+  println(['(é brincadeira, nada foi invadido :) )', 'DarkGray']);
+}
+
+async function music() {
+  if (!soundOn) return err('Os sons estão desligados. Use "som on".');
+  const q = 320, e = 160; // Korobeiniki (canção folclórica russa, domínio público)
+  const song = [659, q, 494, e, 523, e, 587, q, 523, e, 494, e, 440, q, 440, e, 523, e, 659, q, 587, e, 523, e,
+    494, q + e, 523, e, 587, q, 659, q, 523, q, 440, q, 440, q];
+  const colors = ['Red', 'Yellow', 'Green', 'Cyan', 'Blue', 'Magenta'];
+  const d = println(['♪ ', T.A]), s = seg('', 'Red'); d.appendChild(s);
+  for (let i = 0; i < song.length; i += 2) {
+    s.textContent = '█'.repeat(Math.max(1, Math.round((song[i] - 400) / 14)));
+    s.style.color = col(colors[(i / 2) % 6]);
+    tone(song[i], song[i + 1] * 0.95, 0, 0.06);
+    await sleep(song[i + 1]);
+  }
+  s.textContent = 'fim!'; s.style.color = col(T.A);
+}
+
+async function setTheme(arg) {
+  const names = Object.keys(THEMES);
+  let name = (arg || '').toLowerCase().replace(/[ -]/g, '');
+  if (!name) name = names[(names.indexOf(themeName) + 1) % names.length];
+  if (!THEMES[name]) return err('Tema desconhecido. Use: ' + names.join(', '));
+  themeName = name; T = THEMES[name]; store.set('tema', name); applyTheme();
+  await header(true);
+}
+
+async function runCommand(line) {
+  const sp = line.search(/\s/);
+  const cmd = (sp < 0 ? line : line.slice(0, sp)).toLowerCase();
+  const arg = sp < 0 ? '' : line.slice(sp + 1).trim();
+  switch (cmd) {
+    case 'ajuda': case 'help': case '?': return showHelp();
+    case 'limpar': case 'cls': case 'clear': return header(false);
+    case 'hora': case 'data':
+      return typeOut(new Date().toLocaleString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }), T.A, 10);
+    case 'sistema': return system();
+    case 'chat': case 'sala': return openChat();
+    case 'senha': return genPassword(arg);
+    case 'nota': {
+      if (!arg) return err('Escreva algo: nota comprar pão');
+      const n = notes(); n.push(`[${new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}] ${arg}`);
+      store.set('notas', JSON.stringify(n)); sfx('ok'); return bot('Anotado e salvo no celular!');
+    }
+    case 'notas': {
+      const n = notes(); if (!n.length) return bot('Nenhuma nota ainda. Use: nota <texto>');
+      for (const x of n) await typeOut(x, T.T, 4);
+      return;
+    }
+    case 'apagar-notas': store.set('notas', '[]'); return bot('Notas apagadas.');
+    case 'calc': {
+      if (!/^[\d\s.,+\-*/()%]+$/.test(arg)) return err('Use só números e + - * / ( ) %   ex: calc 10*(2+3)');
+      try {
+        const r = Function('"use strict";return (' + arg.replace(/,/g, '.') + ')')();
+        if (typeof r !== 'number' || !isFinite(r)) throw 0;
+        await typeOut(String(+r.toFixed(10)), T.A, 20, [['= ', T.S]]); return sfx('ok');
+      } catch (e) { return err('Conta inválida.'); }
+    }
+    case 'dado': return dice(arg);
+    case 'piada': await bot(pick(JOKES)); return play([523, 80, 659, 80, 784, 120]);
+    case 'matrix': return matrix();
+    case 'hack': return hack();
+    case 'musica': case 'música': return music();
+    case 'tema': return setTheme(arg);
+    case 'som':
+      if (arg === 'off') { soundOn = false; store.set('som', 'off'); return bot('Sons desligados.'); }
+      if (arg === 'on') { soundOn = true; store.set('som', 'on'); sfx('ok'); return bot('Sons ligados!'); }
+      soundOn = !soundOn; store.set('som', soundOn ? 'on' : 'off');
+      if (soundOn) sfx('ok');
+      return bot('Som ' + (soundOn ? 'ligado' : 'desligado') + '.');
+    case 'historico': case 'history':
+      history.forEach((h, i) => println([String(i + 1).padStart(3) + '  ', 'DarkGray'], [h, T.T])); return;
+  }
+  const reply = chatbot(line.toLowerCase());
+  if (reply) return bot(reply);
+  err(`Comando "${cmd}" não existe. Digite ajuda.`);
+}
+
+// ------------------------------------------------------------------ chat (compativel com o AKENETIC do PC)
+// Mesmo formato do terminal.ps1: PBKDF2-SHA1 (20000) -> AES-256-CBC + HMAC-SHA256,
+// base64(iv|cifrado|mac) publicado no topico ntfy.sh derivado do codigo da sala.
+const enc = new TextEncoder(), dec = new TextDecoder();
+const concat = (a, b) => { const r = new Uint8Array(a.length + b.length); r.set(a); r.set(b, a.length); return r; };
+const b64 = u => { let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); };
+const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const clean = s => String(s == null ? '' : s).replace(/[\x00-\x1F\x7F]/g, '').trim();
+
+let chat = null;
+
+async function deriveKeys(room, pass) {
+  const salt = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode('akenetic-salt|' + room)));
+  const base = await crypto.subtle.importKey('raw', enc.encode(pass), 'PBKDF2', false, ['deriveBits']);
+  const bits = new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: 20000, hash: 'SHA-1' }, base, 512));
+  const tid = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode('akenetic-topic|' + room)));
+  return {
+    encKey: await crypto.subtle.importKey('raw', bits.slice(0, 32), { name: 'AES-CBC' }, false, ['encrypt', 'decrypt']),
+    macKey: await crypto.subtle.importKey('raw', bits.slice(32, 64), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']),
+    topic: 'akn-' + [...tid.slice(0, 12)].map(b => b.toString(16).padStart(2, '0')).join('')
+  };
+}
+async function protect(K, text) {
+  const iv = crypto.getRandomValues(new Uint8Array(16));
+  const data = concat(iv, new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-CBC', iv }, K.encKey, enc.encode(text))));
+  return b64(concat(data, new Uint8Array(await crypto.subtle.sign('HMAC', K.macKey, data))));
+}
+async function unprotect(K, s) {
+  try {
+    const all = unb64(s); if (all.length < 64) return null;
+    const data = all.slice(0, -32), mac = all.slice(-32);
+    if (!await crypto.subtle.verify('HMAC', K.macKey, mac, data)) return null;
+    return dec.decode(await crypto.subtle.decrypt({ name: 'AES-CBC', iv: data.slice(0, 16) }, K.encKey, data.slice(16)));
+  } catch (e) { return null; }
+}
+async function sendChat(type, text = '') {
+  const id = [...crypto.getRandomValues(new Uint8Array(6))].map(b => b.toString(16).padStart(2, '0')).join('');
+  chat.own.add(id);
+  try {
+    const body = await protect(chat.K, JSON.stringify({ i: id, n: chat.name, t: type, m: text }));
+    const r = await fetch('https://ntfy.sh/' + chat.K.topic, { method: 'POST', body });
+    return r.ok;
+  } catch (e) { return false; }
+}
+const nameColor = n => { const pal = ['Cyan', 'Yellow', 'Magenta', 'Green', 'Red', 'Blue', 'DarkYellow', 'DarkCyan']; let s = 0; for (const c of n) s += c.charCodeAt(0); return pal[s % pal.length]; };
+const hhmm = d => d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+const notice = (t, c = 'DarkGray') => println(['   ** ' + t + ' **', c]);
+const chatLine = (time, name, text, c) => println([`[${time}] `, 'DarkGray'], [name, c], [' » ', T.S], [text, 'White']);
+
+async function handleItem(o) {
+  if (!chat || o.event !== 'message' || chat.seen.has(o.id)) return;
+  chat.seen.add(o.id);
+  const time = hhmm(new Date(o.time * 1000));
+  const plain = await unprotect(chat.K, o.message);
+  if (!plain) return println([`[${time}] (mensagem com outra senha, ignorada)`, 'DarkGray']);
+  let p; try { p = JSON.parse(plain); } catch (e) { return; }
+  if (chat.own.has(String(p.i))) return;
+  const name = (clean(p.n) || '???').slice(0, 16);
+  if (!chat.live && !chat.hadHistory) { chat.hadHistory = true; println(['──── mensagens anteriores ────', T.S]); }
+  switch (String(p.t)) {
+    case 'msg':
+      chat.people.add(name); chatLine(time, name, clean(p.m), nameColor(name));
+      if (chat.live) { sfx('msg'); buzz(60); }
+      break;
+    case 'join':
+      chat.people.add(name); notice(name + ' entrou na sala', nameColor(name));
+      if (chat.live) { sfx('join'); sendChat('here'); }
+      break;
+    case 'here': chat.people.add(name); break;
+    case 'leave':
+      chat.people.delete(name); notice(name + ' saiu da sala');
+      if (chat.live) sfx('leave');
+      break;
+  }
+}
+const queueItem = o => { const c = chat; if (c) c.chain = c.chain.then(() => chat === c && handleItem(o)); };
+
+function startListening() {
+  const c = chat;
+  (async () => {
+    let since = '12h';
+    for (;;) {
+      if (chat !== c) return;
+      try {
+        const now = Math.floor(Date.now() / 1000);
+        const txt = await (await fetch(`https://ntfy.sh/${c.K.topic}/json?poll=1&since=${since}`)).text();
+        for (const l of txt.split('\n')) { if (!l.trim()) continue; try { const o = JSON.parse(l); queueItem(o); if (o.id) since = o.id; } catch (e) {} }
+        if (since === '12h') since = String(now);
+        break;
+      } catch (e) { notice('sem conexão, tentando de novo...', 'Red'); await sleep(3000); }
+    }
+    c.chain = c.chain.then(() => {
+      if (chat !== c) return;
+      if (c.hadHistory) println(['──────────── agora ────────────', T.S]);
+      c.live = true; notice('conectado! as mensagens são criptografadas', 'Green');
+    });
+    const es = new EventSource(`https://ntfy.sh/${c.K.topic}/sse?since=${since}`);
+    c.es = es;
+    es.onmessage = e => { try { queueItem(JSON.parse(e.data)); } catch (x) {} };
+    es.onerror = () => { if (!c.err) { c.err = true; notice('conexão caiu, reconectando...', 'Red'); } };
+    es.onopen = () => { if (c.err) { c.err = false; notice('conexão de volta!', 'Green'); } };
+  })();
+}
+
+async function openChat() {
+  if (!window.crypto || !crypto.subtle) return err('Este navegador não deixa usar criptografia aqui. Abra o AKENETIC por um link https://');
+  const b = box(['CHAT AKENETIC', 'Use o MESMO código de sala e a MESMA senha do seu amigo (funciona com o AKENETIC do PC).']);
+  b.firstChild.style.color = col(T.P);
+  const name = (clean(await ask('Seu apelido', store.get('nome', ''))) || '').slice(0, 16);
+  const room = clean(await ask('Código da sala', store.get('sala', '')));
+  if (name.length < 2 || room.length < 4) return err('Apelido precisa de 2+ letras e o código da sala de 4+.');
+  const pass = await ask('Senha da sala', '', true);
+  if (pass.length < 4) return err('A senha precisa de pelo menos 4 caracteres.');
+  store.set('nome', name); store.set('sala', room);
+  await spin('Gerando chave secreta...', 400);
+  chat = { name, room, K: await deriveKeys(room.toLowerCase(), pass), own: new Set(), seen: new Set(), people: new Set(),
+           live: false, hadHistory: false, err: false, chain: Promise.resolve(), es: null };
+  chatHeader();
+  notice('conectando...', T.A);
+  setMode('chat');
+  startListening();
+  if (!await sendChat('join')) { notice('não consegui enviar. Tem internet?', 'Red'); sfx('err'); }
+}
+function chatHeader() {
+  out.innerHTML = '';
+  showBanner(false);
+  box([`SALA: ${chat.room} · você: ${chat.name}`, 'Botões: /quem /limpar /som /sair']);
+}
+async function leaveChat() {
+  const c = chat;
+  notice('saindo da sala...');
+  await sendChat('leave');
+  if (c.es) c.es.close();
+  chat = null;
+  setMode('cmd'); sfx('bye');
+  await header(false);
+}
+async function chatSubmit(text) {
+  text = clean(text);
+  if (!text) return;
+  if (/^\/(sair|exit)$/.test(text)) return leaveChat();
+  if (text === '/limpar') return chatHeader();
+  if (text === '/som') { soundOn = !soundOn; store.set('som', soundOn ? 'on' : 'off'); return notice('som ' + (soundOn ? 'ligado' : 'desligado')); }
+  if (text === '/quem') {
+    const p = [...chat.people].sort();
+    return notice(p.length ? 'na sala: você, ' + p.join(', ') : 'por enquanto só você está aqui', p.length ? T.A : 'DarkGray');
+  }
+  if (text.startsWith('/')) return notice('comandos: /quem /limpar /som /sair', 'Yellow');
+  text = text.slice(0, 1000);
+  chatLine(hhmm(new Date()), chat.name, text, T.P); scroll(true);
+  sfx('enter');
+  if (!await sendChat('msg', text)) { notice('mensagem NÃO enviada (sem internet ou limite do servidor)', 'Red'); sfx('err'); }
+}
+
+// ------------------------------------------------------------------ entrada, botoes e modos
+let mode = 'cmd', busy = false, pending = null, pendingSecret = false;
+const CMD_CHIPS = ['ajuda', 'chat', 'matrix', 'hack', 'musica', 'dado', 'piada', 'senha', 'sistema', 'tema', 'notas', 'limpar'];
+const CHAT_CHIPS = ['/quem', '/limpar', '/som', '/sair'];
+
+function setChips(list) {
+  chips.innerHTML = '';
+  for (const c of list) {
+    const b = el('button', 'chip', c); b.type = 'button';
+    b.onclick = () => submit(c);
+    chips.appendChild(b);
+  }
+}
+function setMode(m) {
+  mode = m;
+  setChips(m === 'chat' ? CHAT_CHIPS : CMD_CHIPS);
+  inp.placeholder = m === 'chat' ? 'mensagem...' : 'digite um comando...';
+}
+function ask(label, def = '', secret = false) {
+  println([label + (def ? ` [${def}]` : '') + ':', T.A]);
+  inp.type = secret ? 'password' : 'text';
+  inp.placeholder = secret ? 'senha' : (def || label.toLowerCase());
+  pendingSecret = secret;
+  inp.focus();
+  return new Promise(res => { pending = v => { inp.type = 'text'; setMode(mode); res(v || def); }; });
+}
+
+async function submit(raw) {
+  const text = String(raw).trim();
+  if (pending) {
+    const p = pending; pending = null;
+    println(['» ', T.S], [pendingSecret ? '•'.repeat(text.length) : text, 'White']);
+    return p(text);
+  }
+  if (mode === 'chat' && chat) return chatSubmit(text);
+  if (!text || busy) return;
+  history.push(text);
+  println(['', T.T]);
+  println(['» ', T.S], [text, 'White']);
+  sfx('enter');
+  busy = true;
+  try { await runCommand(text); } catch (e) { err('Erro: ' + e.message); }
+  busy = false;
+  scroll(true);
+}
+
+$('#bar').addEventListener('submit', e => { e.preventDefault(); const v = inp.value; inp.value = ''; submit(v); });
+addEventListener('resize', () => { document.querySelectorAll('.banner').forEach(b => b.style.fontSize = bannerSize(b.parentElement)); scroll(true); });
+
+// ------------------------------------------------------------------ inicializacao
+applyTheme();
+setMode('cmd');
+const bootBanner = makeBanner(['DarkGray', 'DarkGray', 'DarkGray', 'DarkGray', 'DarkGray', 'DarkGray'], document.body);
+bootBanner.cols.forEach(c => [...c.children].forEach(s => s.style.color = '#333'));
+$('#bootBanner').appendChild(bootBanner);
+
+$('#boot').addEventListener('click', async () => {
+  audio();
+  $('#boot').remove();
+  busy = true;
+  await typeOut('Inicializando AKENETIC OS...', T.P, 22);
+  println(['', T.T]);
+  await bar('Kernel', 500); await bar('Sinal', 400); await bar('Cores', 400); await bar('Alto-falante', 300);
+  sfx('boot');
+  out.innerHTML = '';
+  const sp = el('div', 'splash'); sp.style.minHeight = out.clientHeight - 24 + 'px'; out.appendChild(sp);
+  const b = makeBanner(T.G); b.cols.forEach(c => c.style.opacity = 0); sp.appendChild(b);
+  await waveBanner(b, T.G);
+  const sub = el('div', 'center'); sp.appendChild(sub);
+  const s = seg('', T.A); sub.appendChild(s);
+  for (const ch of 'terminal de bolso · leve para qualquer lugar') { s.textContent += ch; await sleep(18); }
+  await sleep(900);
+  await header(false);
+  println(['', T.T]);
+  await bot('Olá! Bem-vindo ao AKENETIC mobile.');
+  busy = false;
+}, { once: true });
+</script>
+</body>
+</html>
