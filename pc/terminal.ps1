@@ -20,7 +20,7 @@ $NotesFile  = Join-Path $Root 'notas.txt'
 $ConfigFile = Join-Path $Root 'config.txt'
 # a edicao premium e liberada pelo arquivo premium.key, que o 'compartilhar' nunca copia
 $IsPremium  = Test-Path -LiteralPath (Join-Path $Root 'premium.key')
-$Version    = '1.4'
+$Version    = '1.5'
 # de onde o comando 'atualizar' baixa a versao nova (publicada pelo 'site publicar' do premium)
 $SiteBase   = 'https://akimisttemperor.github.io/akenetic/'
 $UpdateBase = "$($SiteBase)pc/"
@@ -261,6 +261,7 @@ $Commands = [ordered]@{
     'som on|off'       = 'liga / desliga os sons'
     'historico'        = 'comandos que voce ja digitou'
     'atualizar'        = 'baixa a versao mais nova do AKENETIC'
+    'restaurar [arq]'  = 'recupera um backup .aknbak neste pendrive'
     'sair'             = 'fecha o terminal'
 }
 if ($IsPremium) {
@@ -270,6 +271,7 @@ if ($IsPremium) {
     $Commands.Insert($Commands.Count - 1, 'site abrir', '[PREMIUM] abre o site no navegador')
     $Commands.Insert($Commands.Count - 1, 'aviso <texto>', '[PREMIUM] aviso geral (aviso 2d texto = vale 2 dias)')
     $Commands.Insert($Commands.Count - 1, 'aviso apagar', '[PREMIUM] tira o aviso do ar')
+    $Commands.Insert($Commands.Count - 1, 'backup-premium [pasta]', '[PREMIUM] backup criptografado de tudo')
     $Commands['tema <nome>'] = 'verde | azul | roxo | vermelho | arcoiris | ouro'
 }
 
@@ -1742,6 +1744,139 @@ function Site([string]$arg) {
     }
 }
 
+# ----------------------------------------------------------------- backup do premium
+# Um arquivo .aknbak com tudo que so existe no pendrive (chave premium, token,
+# notas, ficha, historico, config) + o proprio terminal e o app do celular.
+# Formato: "AKNBKP1" | salt(16) | zip cifrado (PBKDF2 100k + AES-256 + HMAC).
+$BackupMagic = 'AKNBKP1'
+
+function Get-PremiumFiles {
+    $list = @()
+    foreach ($n in 'terminal.ps1', 'premium.key', 'github.dat', 'config.txt', 'notas.txt', 'ficha.json') {
+        $f = Join-Path $Root $n
+        if (Test-Path -LiteralPath $f) { $list += @{ Rel = "Terminal/$n"; File = $f } }
+    }
+    $bat = "$Drive\ABRIR TERMINAL.bat"
+    if (Test-Path -LiteralPath $bat) { $list += @{ Rel = 'ABRIR TERMINAL.bat'; File = $bat } }
+    foreach ($dir in 'Celular', 'Conversas') {
+        foreach ($f in Get-ChildItem -LiteralPath "$Drive\$dir" -File -ErrorAction SilentlyContinue) {
+            $list += @{ Rel = "$dir/$($f.Name)"; File = $f.FullName }
+        }
+    }
+    $list
+}
+
+function Confirm-Yes([string]$question) {
+    Write-Host "  $question (s/n): " -NoNewline -ForegroundColor Yellow
+    [Console]::ReadLine() -match '^s'
+}
+
+function Backup-Premium([string]$dest) {
+    $files = @(Get-PremiumFiles)
+    Write-Host ''
+    Box @('BACKUP DO PREMIUM',
+          'Gera UM arquivo criptografado com tudo que so existe neste',
+          'pendrive. Guarde no PC, no Google Drive ou no seu e-mail.')
+    Write-Host ''
+    foreach ($f in $files) {
+        Write-Host '  + ' -NoNewline -ForegroundColor $script:T.P
+        Write-Host $f.Rel -ForegroundColor $script:T.T
+    }
+    Write-Host ''
+    if (-not $dest) { $dest = [Environment]::GetFolderPath('Desktop') }
+    $dest = $dest.Trim('"')
+    if (-not (Test-Path -LiteralPath $dest -PathType Container)) { Err "Pasta nao encontrada: $dest"; return }
+    $dest = (Resolve-Path -LiteralPath $dest).ProviderPath
+    if ($dest.StartsWith($Drive, [StringComparison]::OrdinalIgnoreCase)) { Err 'Salve o backup FORA do pendrive, senao ele some junto. Ex: backup-premium C:\Users\voce\Documents'; return }
+
+    Write-Host '  Crie uma senha SO para este backup. Sem ela nao da para restaurar!' -ForegroundColor Yellow
+    $p1 = Read-Secret '  Senha do backup (8+ caracteres): '
+    if ($p1.Length -lt 8) { Err 'Senha muito curta (minimo 8).'; return }
+    $p2 = Read-Secret '  Repita a senha: '
+    if ($p1 -cne $p2) { Err 'As senhas nao batem.'; return }
+
+    try {
+        Show-Bar 'Compactando arquivos' 500
+        Add-Type -AssemblyName System.IO.Compression
+        $ms  = New-Object IO.MemoryStream
+        $zip = [IO.Compression.ZipArchive]::new($ms, [IO.Compression.ZipArchiveMode]::Create, $true)
+        foreach ($f in $files) {
+            $s = $zip.CreateEntry($f.Rel, [IO.Compression.CompressionLevel]::Optimal).Open()
+            $b = [IO.File]::ReadAllBytes($f.File); $s.Write($b, 0, $b.Length); $s.Close()
+        }
+        $zip.Dispose()
+        Show-Bar 'Criptografando' 500
+        $salt = New-Object byte[] 16
+        [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($salt)
+        $enc  = Protect-Bytes $ms.ToArray() (New-SecretKeys $p1 $salt)
+        $out  = Join-Path $dest ('AKENETIC-premium-{0}.aknbak' -f (Get-Date -Format 'yyyy-MM-dd_HHmm'))
+        $magic = [Text.Encoding]::ASCII.GetBytes($BackupMagic)
+        $fs = [IO.File]::Create($out)
+        $fs.Write($magic, 0, $magic.Length); $fs.Write($salt, 0, 16); $fs.Write($enc, 0, $enc.Length); $fs.Close()
+    } catch { Err "Nao consegui criar o backup: $($_.Exception.Message)"; return }
+
+    Write-Host ''
+    Box @('BACKUP CRIADO!', $out, ('{0} arquivos  ·  {1}' -f $files.Count, (Format-Size (Get-Item -LiteralPath $out).Length))) 'Green' 'White'
+    Bot 'Mande esse arquivo pro seu Google Drive ou e-mail. Num pendrive novo: restaurar <arquivo>'
+    Play 784,90,988,90,1175,90,1568,260
+}
+
+# funciona em qualquer edicao: num pendrive novo voce ainda nao tem o premium
+function Restore-Premium([string]$path) {
+    $path = $path.Trim().Trim('"')
+    if (-not $path) {
+        try {
+            Add-Type -AssemblyName System.Windows.Forms
+            $dlg = New-Object Windows.Forms.OpenFileDialog
+            $dlg.Title = 'AKENETIC - escolha o backup (.aknbak)'; $dlg.Filter = 'Backup AKENETIC (*.aknbak)|*.aknbak|Todos (*.*)|*.*'
+            $owner = New-Object Windows.Forms.Form -Property @{ TopMost = $true }
+            $ok = $dlg.ShowDialog($owner); $owner.Dispose()
+            if ($ok -ne 'OK') { return }
+            $path = $dlg.FileName
+        } catch { Err 'Use: restaurar C:\caminho\AKENETIC-premium-....aknbak'; return }
+    }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Err "Arquivo nao encontrado: $path"; return }
+    $all = [IO.File]::ReadAllBytes($path)
+    if ($all.Length -lt 100 -or [Text.Encoding]::ASCII.GetString($all, 0, 7) -ne $BackupMagic) { Err 'Esse arquivo nao e um backup do AKENETIC.'; return }
+    $salt = New-Object byte[] 16; [Array]::Copy($all, 7, $salt, 0, 16)
+    $data = New-Object byte[] ($all.Length - 23); [Array]::Copy($all, 23, $data, 0, $data.Length)
+
+    Write-Host ''
+    $pass = Read-Secret '  Senha do backup: '
+    Spin 'Abrindo o backup...' 400
+    $zipBytes = Unprotect-Bytes $data (New-SecretKeys $pass $salt)
+    if ($null -eq $zipBytes) { Err 'Senha errada (ou arquivo corrompido).'; return }
+
+    Add-Type -AssemblyName System.IO.Compression
+    $zip = [IO.Compression.ZipArchive]::new([IO.MemoryStream]::new($zipBytes), [IO.Compression.ZipArchiveMode]::Read)
+    # so aceita caminhos relativos e sem '..', para nada sair do pendrive
+    $entries = @($zip.Entries | Where-Object { $_.Name -and $_.FullName -notmatch '(^|[\\/])\.\.([\\/]|$)' -and $_.FullName -notmatch '^[\\/]|:' })
+    Write-Host ''
+    foreach ($e in $entries) {
+        Write-Host '  > ' -NoNewline -ForegroundColor $script:T.P
+        Write-Host $e.FullName -ForegroundColor $script:T.T
+    }
+    Write-Host ''
+    if (-not (Confirm-Yes "Gravar esses $($entries.Count) arquivos em ${Drive}? (os atuais viram .antes)")) { $zip.Dispose(); Bot 'Cancelado.'; return }
+    try {
+        foreach ($e in $entries) {
+            $target = Join-Path "$Drive\" ($e.FullName -replace '/', '\')
+            $dir = Split-Path $target
+            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory $dir -Force | Out-Null }
+            if (Test-Path -LiteralPath $target) { Copy-Item -LiteralPath $target "$target.antes" -Force }
+            $s = $e.Open(); $fs = [IO.File]::Create($target); $s.CopyTo($fs); $fs.Close(); $s.Close()
+        }
+    } catch { $zip.Dispose(); Err "Falha ao restaurar: $($_.Exception.Message)"; return }
+    $zip.Dispose()
+    Show-Bar 'Restaurando' 500
+    Bot 'Restauracao concluida! Reiniciando o AKENETIC...'
+    Play 523,90,659,90,784,90,1047,220
+    Start-Sleep -Milliseconds 600
+    Start-Process -FilePath "$Drive\ABRIR TERMINAL.bat" -WorkingDirectory "$Drive\"
+    Set-Location $env:TEMP
+    exit
+}
+
 # ----------------------------------------------------------------- atualizacao automatica
 # Baixa pc/terminal.ps1 do site; so instala se o arquivo for um AKENETIC valido
 # (sem erro de sintaxe) e guarda o anterior em terminal.ps1.bak.
@@ -1873,6 +2008,8 @@ while ($true) {
         '^site$'                { if ($IsPremium) { Site $arg } else { Err 'Comando exclusivo da edicao premium.' }; break }
         '^atualizar$'           { Update-Terminal; break }
         '^aviso$'               { if ($IsPremium) { Aviso $arg } else { Err 'Comando exclusivo da edicao premium.' }; break }
+        '^backup-premium$'      { if ($IsPremium) { Backup-Premium $arg } else { Err 'Comando exclusivo da edicao premium.' }; break }
+        '^restaurar$'           { Restore-Premium $arg; break }
         '^pendrive$'            { Show-Pendrive; break }
         '^(ls|dir)$'            { if ($arg) { Run-Cmd $line } else { Show-Files }; break }
         '^cd$' {
