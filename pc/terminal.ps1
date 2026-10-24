@@ -20,13 +20,59 @@ $NotesFile  = Join-Path $Root 'notas.txt'
 $ConfigFile = Join-Path $Root 'config.txt'
 # a edicao premium e liberada pelo arquivo premium.key, que o 'compartilhar' nunca copia
 $IsPremium  = Test-Path -LiteralPath (Join-Path $Root 'premium.key')
-$Version    = '1.6'
+$Version    = '2.0'
 # de onde o comando 'atualizar' baixa a versao nova (publicada pelo 'site publicar' do premium)
 $SiteBase   = 'https://akimisttemperor.github.io/akenetic/'
 $UpdateBase = "$($SiteBase)pc/"
 $Rnd        = New-Object Random
 $script:SoundOn = $true
 $script:History = New-Object System.Collections.Generic.List[string]
+
+# ----------------------------------------------------------------- identidade do criador
+# Chave publica ECDSA P-256 do dono (X||Y em base64). O 'criador criar' do premium gera o par,
+# grava a publica aqui e no app do celular; a privada fica cifrada em criador.key.
+# Com ela todos verificam o selo do criador no chat e os convites VIP, sem servidor.
+$CreatorPub = ''
+$script:CreatorVerifier = $null
+$script:VipRevoked = @()
+
+function Get-CreatorVerifier {
+    if (-not $script:CreatorPub) { return $null }
+    if (-not $script:CreatorVerifier) {
+        $blob = New-Object byte[] 72
+        [Array]::Copy([byte[]](0x45, 0x43, 0x53, 0x31, 0x20, 0, 0, 0), $blob, 8)   # "ECS1" + tamanho 32
+        [Array]::Copy([Convert]::FromBase64String($script:CreatorPub), 0, $blob, 8, 64)
+        $v = [Security.Cryptography.ECDsaCng]::new([Security.Cryptography.CngKey]::Import($blob, [Security.Cryptography.CngKeyBlobFormat]::EccPublicBlob))
+        $v.HashAlgorithm = [Security.Cryptography.CngAlgorithm]::Sha256
+        $script:CreatorVerifier = $v
+    }
+    $script:CreatorVerifier
+}
+
+function Test-CreatorSig([string]$text, [string]$sig) {
+    if (-not $sig) { return $false }
+    try { (Get-CreatorVerifier).VerifyData([Text.Encoding]::UTF8.GetBytes($text), [Convert]::FromBase64String($sig)) } catch { $false }
+}
+
+# convite VIP: "AKNVIP.<json em base64>.<assinatura do criador sobre o base64>"
+function Test-VipToken([string]$token) {
+    if ("$token".Trim() -notmatch '^AKNVIP\.([A-Za-z0-9+/=]+)\.([A-Za-z0-9+/=]+)$') { return $null }
+    $body = $Matches[1]; $sig = $Matches[2]
+    if (-not (Test-CreatorSig $body $sig)) { return $null }
+    try { $j = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($body)) | ConvertFrom-Json } catch { return $null }
+    if (-not $j.n -or -not $j.id -or ($script:VipRevoked -contains [string]$j.id)) { return $null }
+    $j
+}
+
+$VipFile = Join-Path $Root 'vip.key'
+$script:VipToken = $null; $script:VipInfo = $null
+if (-not $IsPremium -and (Test-Path -LiteralPath $VipFile)) {
+    $tok = (Get-Content -LiteralPath $VipFile -Raw).Trim()
+    $script:VipInfo = Test-VipToken $tok
+    if ($script:VipInfo) { $script:VipToken = $tok }
+}
+$IsVip = [bool]$script:VipInfo
+$GoldName = 'PRO'; if (-not $IsPremium) { $GoldName = 'VIP' }
 
 # ----------------------------------------------------------------- temas
 $Themes = @{
@@ -36,13 +82,14 @@ $Themes = @{
     vermelho = @{ P='Red';     S='DarkRed';     A='Yellow'; T='Gray'; G=@('Yellow','Yellow','Red','Red','DarkRed','DarkRed') }
     arcoiris = @{ P='Yellow';  S='Magenta';     A='Cyan';   T='Gray'; G=@('Red','Yellow','Green','Cyan','Blue','Magenta') }
 }
-if ($IsPremium) {
-    $Themes.ouro = @{ P='Yellow'; S='DarkYellow'; A='White'; T='Gray'; G=@('White','Yellow','Yellow','DarkYellow','DarkYellow','DarkRed') }
-}
+$GoldTheme = @{ P='Yellow'; S='DarkYellow'; A='White'; T='Gray'; G=@('White','Yellow','Yellow','DarkYellow','DarkYellow','DarkRed') }
+if ($IsPremium -or $IsVip) { $Themes.ouro = $GoldTheme }
 $script:ThemeName = 'verde'
 $script:ChatName  = $env:USERNAME
 $script:ChatRoom  = ''
 $script:AvisoSeen = ''
+$script:NovSeen   = ''
+$proConfigured    = $false
 if (Test-Path $ConfigFile) {
     foreach ($l in Get-Content $ConfigFile -Encoding UTF8) {
         if ($l -match '^tema=(\w+)$' -and $Themes.ContainsKey($Matches[1])) { $script:ThemeName = $Matches[1] }
@@ -50,17 +97,28 @@ if (Test-Path $ConfigFile) {
         if ($l -match '^nome=(.+)$') { $script:ChatName = $Matches[1] }
         if ($l -match '^sala=(.+)$') { $script:ChatRoom = $Matches[1] }
         if ($l -match '^aviso=(.+)$') { $script:AvisoSeen = $Matches[1] }
+        if ($l -match '^novidades=(.+)$') { $script:NovSeen = $Matches[1] }
+        if ($l -eq 'pro=1') { $proConfigured = $true }
     }
 }
+# na primeira vez como premium o tema vira ouro (depois o 'tema' troca normalmente)
+if ($IsPremium -and -not $proConfigured) { $script:ThemeName = 'ouro' }
 $script:T = $Themes[$script:ThemeName]
 
 function Save-Config {
-    @("tema=$script:ThemeName",
+    $lines = @("tema=$script:ThemeName",
       "som=$(if ($script:SoundOn) {'on'} else {'off'})",
       "nome=$script:ChatName",
       "sala=$script:ChatRoom",
-      "aviso=$script:AvisoSeen") | Set-Content $ConfigFile -Encoding UTF8
+      "aviso=$script:AvisoSeen",
+      "novidades=$script:NovSeen")
+    if ($IsPremium) { $lines += 'pro=1' }
+    $lines | Set-Content $ConfigFile -Encoding UTF8
 }
+if ($IsPremium -and -not $proConfigured) { Save-Config }
+
+# modo ouro: premium + tema ouro troca animacoes, sons, prompt e o matrix
+function Test-GoldMode { ($IsPremium -or $script:IsVip) -and $script:ThemeName -eq 'ouro' }
 
 # ----------------------------------------------------------------- sons
 function Play([int[]]$notes) {
@@ -72,6 +130,15 @@ function Play([int[]]$notes) {
 }
 
 function Sfx([string]$name) {
+    if (Test-GoldMode) {
+        switch ($name) {
+            'enter' { Play 1760,15; return }
+            'tick'  { Play 2637,10; return }
+            'ok'    { Play 1568,40,2093,110; return }                                  # moeda
+            'boot'  { Play 523,80,659,80,784,80,1047,120,1319,120,1568,280; return }   # fanfarra
+            'bye'   { Play 1568,80,1319,80,1047,80,784,80,523,320; return }
+        }
+    }
     switch ($name) {
         'enter' { Play 1400,18 }
         'tick'  { Play 2200,10 }
@@ -130,7 +197,11 @@ function Show-Bar([string]$label, [int]$ms = 600, [int]$width = 30) {
     for ($i = 0; $i -le $width; $i++) {
         Write-Host "`r  $($label.PadRight(28))" -NoNewline -ForegroundColor $script:T.T
         Write-Host '[' -NoNewline -ForegroundColor $script:T.S
-        Write-Host ('█' * $i) -NoNewline -ForegroundColor $script:T.P
+        if ((Test-GoldMode) -and $i -gt 0 -and $i -lt $width) {
+            # barra de ouro com uma faisca branca na ponta
+            Write-Host ('█' * ($i - 1)) -NoNewline -ForegroundColor $script:T.P
+            Write-Host '▓' -NoNewline -ForegroundColor White
+        } else { Write-Host ('█' * $i) -NoNewline -ForegroundColor $script:T.P }
         Write-Host ('░' * ($width - $i)) -NoNewline -ForegroundColor DarkGray
         Write-Host ']' -NoNewline -ForegroundColor $script:T.S
         Write-Host (' {0,3}%' -f [int]($i * 100 / $width)) -NoNewline -ForegroundColor $script:T.A
@@ -179,7 +250,72 @@ $BannerWidth = $BannerLines[0].Length
 
 # Banner centralizado. Com -Animated as letras entram da esquerda ondulando,
 # a onda vai acalmando ate o nome assentar e um brilho atravessa o texto.
+# Modo ouro: as letras surgem como po de ouro caindo em ordem aleatoria (faisca branca
+# que assenta na cor), com brilhinhos piscando em volta e dois brilhos atravessando o nome.
+function Show-GoldBanner($colors) {
+    $pad = Center-Pad $BannerWidth
+    $W = [Console]::WindowWidth
+    Cursor $false
+    $H = 8
+    Write-Host ''
+    for ($i = 0; $i -lt $H; $i++) { Write-Host '' }
+    $top = [Console]::CursorTop - $H
+    $put = {
+        param($x, $y, $ch, $c)
+        if ($x -ge 0 -and $x -lt $W - 1) { [Console]::SetCursorPosition($x, $y); [Console]::ForegroundColor = $c; [Console]::Write($ch) }
+    }
+    $cells = for ($r = 0; $r -lt 6; $r++) { for ($x = 0; $x -lt $BannerWidth; $x++) { if ($BannerLines[$r][$x] -ne ' ') { $r * 1000 + $x } } }
+    $order = @($cells | Sort-Object { $Rnd.Next() })
+    $per = [math]::Ceiling($order.Count / 28)
+    $sparkChars = '*', '+', '·', '.', '*'
+    $sparkColors = 'Yellow', 'White', 'DarkYellow'
+    $sparks = New-Object System.Collections.Generic.Queue[object]
+    $prev = @(); $idx = 0; $frame = 0
+    while ($idx -lt $order.Count -or $prev.Count) {
+        foreach ($c in $prev) { $r = [int][math]::Floor($c / 1000); $x = $c % 1000; & $put ($pad + $x) ($top + 1 + $r) $BannerLines[$r][$x] $colors[$r] }
+        $prev = @()
+        for ($k = 0; $k -lt $per -and $idx -lt $order.Count; $k++) {
+            $c = $order[$idx]; $idx++
+            $r = [int][math]::Floor($c / 1000); $x = $c % 1000
+            & $put ($pad + $x) ($top + 1 + $r) $BannerLines[$r][$x] 'White'
+            $prev += $c
+        }
+        for ($k = 0; $k -lt 3; $k++) {
+            $sx = $pad + $Rnd.Next(-3, $BannerWidth + 3); $sy = $top + @(0, 7)[$Rnd.Next(2)]
+            & $put $sx $sy $sparkChars[$Rnd.Next($sparkChars.Count)] $sparkColors[$Rnd.Next(3)]
+            $sparks.Enqueue(@($sx, $sy))
+        }
+        while ($sparks.Count -gt 12) { $s = $sparks.Dequeue(); & $put $s[0] $s[1] ' ' 'Gray' }
+        if ($frame % 3 -eq 0) { Play (2000 + $Rnd.Next(1600)),10 } else { Start-Sleep -Milliseconds 26 }
+        $frame++
+    }
+    for ($pass = 0; $pass -lt 2; $pass++) {
+        for ($s = -8; $s -le $BannerWidth + 8; $s += 3) {
+            for ($r = 0; $r -lt 6; $r++) {
+                $ln = $BannerLines[$r]
+                $a1 = [math]::Max(0, [math]::Min($BannerWidth, $s - 4 + $r))
+                $a2 = [math]::Max(0, [math]::Min($BannerWidth, $s + 4 + $r))
+                [Console]::SetCursorPosition($pad, $top + 1 + $r)
+                [Console]::ForegroundColor = $colors[$r]; [Console]::Write($ln.Substring(0, $a1))
+                [Console]::ForegroundColor = 'White';     [Console]::Write($ln.Substring($a1, $a2 - $a1))
+                [Console]::ForegroundColor = $colors[$r]; [Console]::Write($ln.Substring($a2))
+            }
+            if ($Rnd.Next(4) -eq 0) {
+                $sx = $pad + $Rnd.Next(0, $BannerWidth); $sy = $top + @(0, 7)[$Rnd.Next(2)]
+                & $put $sx $sy '*' 'White'; $sparks.Enqueue(@($sx, $sy))
+            }
+            Start-Sleep -Milliseconds 12
+        }
+    }
+    while ($sparks.Count) { $s = $sparks.Dequeue(); & $put $s[0] $s[1] ' ' 'Gray'; Start-Sleep -Milliseconds 15 }
+    Play 1047,80,1319,80,1568,80,2093,300
+    [Console]::ForegroundColor = 'Gray'
+    [Console]::SetCursorPosition(0, $top + $H)
+    Cursor $true
+}
+
 function Show-Banner([switch]$Animated, $colors = $script:T.G) {
+    if ($Animated -and (Test-GoldMode)) { try { Show-GoldBanner $colors; return } catch {} }
     $pad = Center-Pad $BannerWidth
     if (-not $Animated) {
         Write-Host ''
@@ -262,6 +398,8 @@ $Commands = [ordered]@{
     'historico'        = 'comandos que voce ja digitou'
     'atualizar'        = 'baixa a versao mais nova do AKENETIC'
     'restaurar [arq]'  = 'recupera um backup .aknbak neste pendrive'
+    'vip [convite]'    = 'resgata um convite VIP (tema ouro + selo no chat)'
+    'conta'            = 'sua conta: exportar pro celular, trocar senha'
     'sair'             = 'fecha o terminal'
 }
 if ($IsPremium) {
@@ -272,6 +410,12 @@ if ($IsPremium) {
     $Commands.Insert($Commands.Count - 1, 'aviso <texto>', '[PREMIUM] aviso geral (aviso 2d texto = vale 2 dias)')
     $Commands.Insert($Commands.Count - 1, 'aviso apagar', '[PREMIUM] tira o aviso do ar')
     $Commands.Insert($Commands.Count - 1, 'backup-premium [pasta]', '[PREMIUM] backup criptografado de tudo')
+    $Commands.Insert($Commands.Count - 1, 'site testar', '[PREMIUM] abre o app no PC antes de publicar')
+    $Commands.Insert($Commands.Count - 1, 'site voltar', '[PREMIUM] desfaz uma publicacao com problema')
+    $Commands.Insert($Commands.Count - 1, 'cofre', '[PREMIUM] cofre de senhas (cofre ajuda)')
+    $Commands.Insert($Commands.Count - 1, 'criador [criar]', '[PREMIUM] sua chave de criador (selo verificado)')
+    $Commands.Insert($Commands.Count - 1, 'vip criar <nome>', '[PREMIUM] gera um convite VIP assinado')
+    $Commands.Insert($Commands.Count - 1, 'vip lista | revogar <n>', '[PREMIUM] convites feitos / cancela um')
     $Commands['tema <nome>'] = 'verde | azul | roxo | vermelho | arcoiris | ouro'
 }
 
@@ -372,6 +516,9 @@ function Matrix {
     $y = New-Object int[] $w; $len = New-Object int[] $w
     for ($x = 0; $x -lt $w; $x++) { $y[$x] = -$Rnd.Next(0, $h * 2); $len[$x] = $Rnd.Next(6, $h) }
     $end = (Get-Date).AddSeconds(30)
+    # no modo ouro vira "chuva de ouro"
+    $mid = 'Green'; $tail = 'DarkGreen'
+    if (Test-GoldMode) { $mid = 'Yellow'; $tail = 'DarkYellow'; $glyphs = '0123456789$*+♦·$$'.ToCharArray() }
     while (-not [Console]::KeyAvailable -and (Get-Date) -lt $end) {
         for ($x = 0; $x -lt $w; $x += 2) {
             $cy = $y[$x]
@@ -380,12 +527,12 @@ function Matrix {
                 [Console]::Write($glyphs[$Rnd.Next($glyphs.Length)])
             }
             if ($cy - 1 -ge 0 -and $cy - 1 -lt $h) {
-                [Console]::SetCursorPosition($x, $top + $cy - 1); [Console]::ForegroundColor = 'Green'
+                [Console]::SetCursorPosition($x, $top + $cy - 1); [Console]::ForegroundColor = $mid
                 [Console]::Write($glyphs[$Rnd.Next($glyphs.Length)])
             }
             $my = $cy - [int]($len[$x] / 2)
             if ($my -ge 0 -and $my -lt $h) {
-                [Console]::SetCursorPosition($x, $top + $my); [Console]::ForegroundColor = 'DarkGreen'
+                [Console]::SetCursorPosition($x, $top + $my); [Console]::ForegroundColor = $tail
                 [Console]::Write($glyphs[$Rnd.Next($glyphs.Length)])
             }
             $ty = $cy - $len[$x]
@@ -779,6 +926,9 @@ function New-ChatPayload([string]$type, [string]$text = '', $extra = $null) {
     [void]$script:ChatOwnIds.Add($id)
     $o = @{ i = $id; n = $script:ChatName; t = $type; m = $text }
     if ($null -ne $extra) { $o.x = $extra }
+    # selo do criador: assinatura sobre "id|nome|tipo|texto"; VIP: o convite vai junto
+    if ($script:CreatorSigner) { $o.cs = Sign-Text "$id|$($script:ChatName)|$type|$text" }
+    if ($script:VipToken) { $o.v = $script:VipToken }
     Protect-Msg ($o | ConvertTo-Json -Compress -Depth 6)
 }
 
@@ -902,6 +1052,7 @@ function Save-ChatFile([string]$url, [string]$name) {
 function Clean([string]$s) { ($s -replace '[\x00-\x1F\x7F]', '').Trim() }
 
 function Name-Color([string]$n) {
+    if ($script:Badges -and $script:Badges[$n] -eq 'creator') { return 'Yellow' }
     $pal = 'Cyan', 'Yellow', 'Magenta', 'Green', 'Red', 'Blue', 'DarkYellow', 'DarkCyan'
     $s = 0; foreach ($c in $n.ToCharArray()) { $s += [int]$c }
     $pal[$s % $pal.Count]
@@ -961,6 +1112,9 @@ function Draw-Input {
 
 function Write-ChatLine([string]$time, [string]$name, [string]$text, $nameColor) {
     Write-Host "  [$time] " -NoNewline -ForegroundColor DarkGray
+    $badge = ''; if ($script:Badges) { $badge = $script:Badges[$name] }
+    if ($badge -eq 'creator') { Write-Host '♦ ' -NoNewline -ForegroundColor White }
+    elseif ($badge -eq 'vip') { Write-Host '☼ ' -NoNewline -ForegroundColor Yellow }
     Write-Host $name -NoNewline -ForegroundColor $nameColor
     Write-Host ' » ' -NoNewline -ForegroundColor $script:T.S
     Write-Host $text -ForegroundColor White
@@ -1135,8 +1289,11 @@ function Handle-ChatItem([string]$raw) {
     if (-not $plain) { Write-Host "  [$time] (mensagem com outra senha, ignorada)" -ForegroundColor DarkGray; return }
     try { $p = $plain | ConvertFrom-Json } catch { return }
     $name = Cut ([string]$p.n) 16; if (-not $name) { $name = '???' }
+    # selo vale so para esta mensagem (um impostor com o mesmo nome nao herda)
+    $script:Badges[$name] = Get-Badge $p $name
     # o historico grava tambem as nossas mensagens (quando o eco volta do servidor)
     $logText = switch ([string]$p.t) {
+        'anuncio' { "ANUNCIO ($name): $(Clean ([string]$p.m))" }
         'msg'   { "$name » $(Clean ([string]$p.m))" }
         'file'  { "$name » $($KindLabel[(Get-FileKind ([string]$p.m) $p.x.k)]) $(Cut ([string]$p.m) 120)" }
         'roll'  { $x = Normalize-Roll $p.x; if ($x) { "$name rolou $($x.e): [$($x.d -join '] [')] = $($x.r)" } }
@@ -1195,6 +1352,12 @@ function Handle-ChatItem([string]$raw) {
         'secret' { Write-ChatNotice "$name (mestre) rolou um dado em segredo..." DarkYellow; if ($live) { Play 220,200 } }
         'master' { $script:ChatMaster = $name; Write-ChatNotice "$name agora e o MESTRE da sala" Yellow; if ($live) { Play 523,90,784,160 } }
         'narr'   { Write-Narration (Clean ([string]$p.m)) $live; if ($live) { Show-DesktopNotice "Narracao do mestre: $(Cut ([string]$p.m) 120)" } }
+        'anuncio' {
+            if ($script:Badges[$name] -eq 'creator') {
+                Write-Anuncio (Clean ([string]$p.m)) $live
+                if ($live) { Show-DesktopNotice "Anuncio do criador: $(Cut ([string]$p.m) 120)" }
+            } else { Write-ChatLine $time $name "(anuncio NAO verificado) $(Clean ([string]$p.m))" (Name-Color $name) }
+        }
         'sheet'  {
             $script:Sheets[$name] = Normalize-Sheet $p.x
             Write-ChatNotice "$name atualizou a ficha:" (Name-Color $name)
@@ -1268,6 +1431,7 @@ function Chat-Help {
         @('/iniciativa [+2]', 'rola iniciativa e mostra a ordem'),
         @('/mestre', 'vira o mestre da sala'),
         @('/narrar <texto>', 'narracao em destaque (mestre)'),
+        @('/anuncio <texto>', 'anuncio dourado verificado (so o criador)'),
         @('/secreto 1d20', 'rolagem escondida (mestre)'),
         @('/iniciativa limpar', 'zera a ordem de turnos')
     )
@@ -1345,6 +1509,13 @@ function Chat-Command([string]$text) {
             Write-ChatNotice 'voce agora e o MESTRE da sala' Yellow
             [void](Send-Chat 'master'); break
         }
+        '^/anuncio$' {
+            if (-not $script:CreatorSigner) { Write-ChatNotice 'so o criador, com o selo ativo (entre no chat com a senha mestra)' Yellow; break }
+            if (-not $arg) { Write-ChatNotice 'use: /anuncio Sessao especial hoje as 21h!' Yellow; break }
+            Write-Anuncio $arg $false
+            if (-not (Send-Chat 'anuncio' $arg)) { Write-ChatNotice 'anuncio NAO enviado' Red }
+            break
+        }
         '^/narrar$' {
             if (-not $isMaster) { Write-ChatNotice 'so o mestre narra (use /mestre)' Yellow; break }
             if (-not $arg) { Write-ChatNotice 'use: /narrar A porta range e uma sombra aparece...' Yellow; break }
@@ -1393,12 +1564,20 @@ function Open-ChatRoom {
           'Combine com seu amigo o MESMO codigo de sala e a MESMA senha.',
           'Funciona junto com o AKENETIC do celular.')
     Write-Host ''
-    $name = Ask 'Seu apelido' $script:ChatName
+    if ($script:Account) {
+        $name = [string]$script:Account.nome
+        Write-Host "  Entrando como " -NoNewline -ForegroundColor $script:T.A; Write-Host $name -ForegroundColor White
+    } else { $name = Ask 'Seu apelido' $script:ChatName }
     if ($name.Length -gt 16) { $name = $name.Substring(0, 16) }
     $room = Ask 'Codigo da sala' $script:ChatRoom
     if ($name.Length -lt 2 -or $room.Length -lt 4) { Err 'Apelido precisa de 2+ letras e o codigo da sala de 4+.'; return }
     $pass = Read-Secret '  Senha da sala: '
     if ($pass.Length -lt 4) { Err 'A senha precisa de pelo menos 4 caracteres.'; return }
+    if ($IsPremium -and (Test-Path -LiteralPath $CreatorFile) -and -not $script:CreatorSigner) {
+        Write-Host '  ♦ Selo de criador: digite a senha mestra do criador (Enter entra sem selo)' -ForegroundColor DarkYellow
+        if (Unlock-Creator -Optional) { Write-Host '  √ selo ativo: suas mensagens vao assinadas' -ForegroundColor Green }
+    }
+    if ($script:VipRevoked.Count -eq 0) { $rv = Get-SiteJson 'vip-revogados.json'; if ($rv) { $script:VipRevoked = @($rv | ForEach-Object { [string]$_ }) } }
 
     $script:ChatName = $name; $script:ChatRoom = $room; Save-Config
     Spin 'Gerando chave secreta...' 400
@@ -1422,6 +1601,8 @@ function Open-ChatRoom {
     $script:LastTypingSent   = [DateTime]::MinValue
     $script:TypingPs         = $null
     $script:ChatNotify       = $true
+    $script:Badges           = @{}
+    if ($script:CreatorSigner) { $script:Badges[$name] = 'creator' } elseif ($script:VipToken) { $script:Badges[$name] = 'vip' }
     Open-ChatLog
 
     $queue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[string]'
@@ -1666,6 +1847,23 @@ function Site-Status {
 }
 
 function Site-Publish([string]$msg) {
+    if (-not (Unlock-GitHub)) { return }
+    # se o app ou o terminal mudaram, pergunta as novidades (vao junto, em novidades.json)
+    try {
+        $remote = Get-RemoteTree
+        $code = @(Get-SiteFiles | Where-Object {
+            $_.Path -in 'index.html', 'pc/terminal.ps1' -and (Test-Path -LiteralPath $_.File) -and
+            $remote.Files[$_.Path] -ne (Get-GitBlobSha ([IO.File]::ReadAllBytes($_.File))) })
+        if ($code.Count) {
+            Write-Host ''
+            $nov = Ask "O que mudou na v$Version? (todo mundo ve ao atualizar; Enter pula)"
+            if ($nov) {
+                $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+                $obj = [ordered]@{ id = "$now"; versao = $Version; texto = (Cut $nov 400); data = $now }
+                [IO.File]::WriteAllText("$Drive\Celular\novidades.json", ($obj | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false))
+            }
+        }
+    } catch {}
     $sent = Publish-Files (Get-SiteFiles) $msg
     if ($sent | Where-Object { $_.Path -eq 'pc/terminal.ps1' }) {
         Bot "Seus amigos ja podem digitar 'atualizar' para receber a v$Version."
@@ -1845,7 +2043,606 @@ function Site([string]$arg) {
         '^config$'            { Site-Config; break }
         '^abrir$'             { Start-Process (Site-Url); Bot 'Abrindo o site no navegador...'; break }
         '^(sair|trancar)$'    { $script:GhToken = $null; Bot 'Token apagado da memoria. Vai pedir a senha mestra de novo.'; break }
-        default               { Err 'Use: site | site publicar [mensagem] | site config | site abrir | site trancar' }
+        '^testar$'            { Site-Test $rest; break }
+        '^voltar$'            { Site-Revert; break }
+        default               { Err 'Use: site | site publicar [msg] | site testar | site voltar | site config | site abrir | site trancar' }
+    }
+}
+
+# ----------------------------------------------------------------- site testar
+# Servidor local minimo (TcpListener, nao precisa de administrador) servindo D:\Celular,
+# pra ver o app no navegador do PC antes de publicar. Morre junto com o terminal.
+$TestServer = {
+    param($root, $listener, $state)
+    $types = @{ '.html' = 'text/html; charset=utf-8'; '.js' = 'application/javascript'; '.json' = 'application/json'
+                '.webmanifest' = 'application/manifest+json'; '.png' = 'image/png'; '.txt' = 'text/plain; charset=utf-8' }
+    $rootFull = [IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
+    while (-not $state.Stop) {
+        try {
+            $client = $listener.AcceptTcpClient()
+            $stream = $client.GetStream()
+            $rd = New-Object IO.StreamReader($stream, [Text.Encoding]::ASCII)
+            $first = $rd.ReadLine()
+            while ($rd.ReadLine()) {}
+            $path = 'index.html'
+            if ($first -match '^GET\s+/([^\s?#]*)' -and $Matches[1]) { $path = [Uri]::UnescapeDataString($Matches[1]) }
+            $file = [IO.Path]::GetFullPath((Join-Path $root ($path -replace '/', '\')))
+            if ($file.StartsWith($rootFull, [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $file -PathType Leaf)) {
+                $body = [IO.File]::ReadAllBytes($file); $status = '200 OK'
+                $ct = $types[[IO.Path]::GetExtension($file).ToLower()]; if (-not $ct) { $ct = 'application/octet-stream' }
+            } else { $body = [Text.Encoding]::UTF8.GetBytes('nao encontrado'); $status = '404 Not Found'; $ct = 'text/plain' }
+            $head = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 $status`r`nContent-Type: $ct`r`nContent-Length: $($body.Length)`r`nCache-Control: no-store`r`nConnection: close`r`n`r`n")
+            $stream.Write($head, 0, $head.Length); $stream.Write($body, 0, $body.Length); $stream.Flush()
+            $client.Close()
+        } catch { if ($state.Stop) { break } }
+    }
+}
+
+function Site-Test([string]$arg) {
+    if ($arg -match '^(parar|stop)$') {
+        if (-not $script:TestState) { Bot 'O servidor de teste nao esta rodando.'; return }
+        $script:TestState.Stop = $true; try { $script:TestListener.Stop() } catch {}
+        $script:TestState = $null; Bot 'Servidor de teste desligado.'; return
+    }
+    if (-not $script:TestState) {
+        $listener = $null
+        foreach ($port in 8790..8799) {
+            try { $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $port); $listener.Start(); break } catch { $listener = $null }
+        }
+        if (-not $listener) { Err 'Nao consegui abrir um servidor local (portas 8790-8799 ocupadas).'; return }
+        $script:TestListener = $listener
+        $script:TestPort = $port
+        $script:TestState = [hashtable]::Synchronized(@{ Stop = $false })
+        $ps = [powershell]::Create()
+        [void]$ps.AddScript($TestServer).AddArgument("$Drive\Celular").AddArgument($listener).AddArgument($script:TestState)
+        [void]$ps.BeginInvoke()
+    }
+    $url = "http://localhost:$script:TestPort/"
+    Spin 'Abrindo o app de teste...' 400
+    Start-Process $url
+    Box @('MODO TESTE DO APP', $url,
+          'E o app do D:\Celular, do jeito que esta agora no pendrive.',
+          'Gostou? site publicar.   Terminou? site testar parar')
+    Sfx ok
+}
+
+# ----------------------------------------------------------------- site voltar
+# Cria um commit novo com os arquivos de uma versao anterior (o historico fica guardado,
+# entao da pra "voltar do voltar"). O aviso atual nao e mexido.
+function Site-Revert {
+    if (-not (Unlock-GitHub)) { return }
+    Write-Host ''
+    Spin 'Buscando as ultimas publicacoes...' 400
+    try {
+        $remote  = Get-RemoteTree
+        # o Invoke-RestMethod devolve a lista JSON como um objeto so; o ForEach abre item por item
+        $commits = @(Invoke-GitHub GET "/repos/$script:GhRepo/commits?per_page=8&sha=$($remote.Branch)" | ForEach-Object { $_ })
+    } catch { Err (Get-GhError $_); return }
+    if ($commits.Count -lt 2) { Bot 'Nao tem versao anterior pra voltar.'; return }
+    Write-Host ''
+    for ($i = 0; $i -lt $commits.Count; $i++) {
+        # o Invoke-RestMethod do PowerShell 5 ja converte a data ISO em DateTime (UTC)
+        $d = $commits[$i].commit.author.date
+        if ($d -is [DateTime]) { $d = $d.ToLocalTime() } else { $d = [DateTimeOffset]::Parse([string]$d, [Globalization.CultureInfo]::InvariantCulture).LocalDateTime }
+        $when = $d.ToString('dd/MM HH:mm')
+        $tag = '  '; if ($i -eq 0) { $tag = '> ' }
+        Write-Host ('  {0}{1}  ' -f $tag, $i) -NoNewline -ForegroundColor $script:T.A
+        Write-Host ('{0}  ' -f $when) -NoNewline -ForegroundColor DarkGray
+        Write-Host (Cut ($commits[$i].commit.message -split "`n")[0] 60) -ForegroundColor $script:T.T
+    }
+    Write-Host '  (> = o que esta no ar agora)' -ForegroundColor DarkGray
+    $pick = Ask 'Voltar para qual numero?' '1'
+    if ($pick -notmatch '^\d+$' -or [int]$pick -lt 1 -or [int]$pick -ge $commits.Count) { Bot 'Cancelado.'; return }
+    $target = $commits[[int]$pick]
+    if (-not (Confirm-Yes "Colocar no ar a versao '$(Cut ($target.commit.message -split "`n")[0] 40)'?")) { Bot 'Cancelado.'; return }
+    try {
+        $old = Invoke-GitHub GET "/repos/$script:GhRepo/git/commits/$($target.sha)"
+        $entries = @()
+        if ($remote.Files.ContainsKey('aviso.json')) { $entries += @{ path = 'aviso.json'; mode = '100644'; type = 'blob'; sha = $remote.Files['aviso.json'] } }
+        $treeSha = $old.tree.sha
+        if ($entries.Count) { $treeSha = (Invoke-GitHub POST "/repos/$script:GhRepo/git/trees" @{ base_tree = $old.tree.sha; tree = $entries }).sha }
+        $commit = Invoke-GitHub POST "/repos/$script:GhRepo/git/commits" @{ message = "AKENETIC: voltou para '$(Cut ($target.commit.message -split "`n")[0] 50)'"; tree = $treeSha; parents = @($remote.Commit) }
+        [void](Invoke-GitHub PATCH "/repos/$script:GhRepo/git/refs/heads/$($remote.Branch)" @{ sha = $commit.sha })
+    } catch { Err (Get-GhError $_); return }
+    Write-Host '  √ versao anterior no ar! commit ' -NoNewline -ForegroundColor Green
+    Write-Host $commit.sha.Substring(0, 7) -ForegroundColor White
+    Sfx ok
+    Bot 'Em ~1 minuto o site e o atualizar dos amigos voltam pra essa versao.'
+    Write-Host '  Atencao: o pendrive continua com a versao nova. Corrija e use site publicar de novo.' -ForegroundColor Yellow
+}
+
+# ----------------------------------------------------------------- novidades da versao
+function Get-SiteJson([string]$name, [int]$timeout = 2500) {
+    try {
+        $req = [Net.HttpWebRequest]::Create("$SiteBase$($name)?akn=$([DateTime]::UtcNow.Ticks)")
+        $req.Timeout = $timeout; $req.ReadWriteTimeout = $timeout; $req.UserAgent = 'AKENETIC'
+        $resp = $req.GetResponse()
+        $rd = New-Object IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8)
+        $j = $rd.ReadToEnd().TrimStart([char]0xFEFF) | ConvertFrom-Json; $resp.Close()
+        $j
+    } catch { $null }
+}
+
+function Show-Novidades($n, [string]$title) {
+    $lines = @($title, '') + @(Wrap-Text (Clean ([string]$n.texto)) 56)
+    Write-Host ''
+    Box $lines $script:T.P 'White'
+    Play 784,70,988,70,1175,140
+}
+
+# amigos: mostra uma vez as novidades da versao que acabaram de receber
+function Check-Novidades {
+    if ($IsPremium) { return }
+    $n = Get-SiteJson 'novidades.json'
+    if (-not $n -or -not $n.texto -or [string]$n.versao -ne $Version -or [string]$n.id -eq $script:NovSeen) { return }
+    Show-Novidades $n "NOVIDADES DA v$Version"
+    $script:NovSeen = [string]$n.id; Save-Config
+}
+
+# ----------------------------------------------------------------- criador e convites VIP
+$CreatorFile = Join-Path $Root 'criador.key'
+$VipListFile = Join-Path $Root 'vips.txt'
+$RevokedFile = "$Drive\Celular\vip-revogados.json"
+$script:CreatorSigner = $null
+
+function Sign-Text([string]$text) {
+    if (-not $script:CreatorSigner) { return $null }
+    [Convert]::ToBase64String($script:CreatorSigner.SignData([Text.Encoding]::UTF8.GetBytes($text)))
+}
+
+function Set-CreatorSigner([byte[]]$priv) {
+    $s = [Security.Cryptography.ECDsaCng]::new([Security.Cryptography.CngKey]::Import($priv, [Security.Cryptography.CngKeyBlobFormat]::EccPrivateBlob))
+    $s.HashAlgorithm = [Security.Cryptography.CngAlgorithm]::Sha256
+    $script:CreatorSigner = $s
+}
+
+function Unlock-Creator([switch]$Optional) {
+    if ($script:CreatorSigner) { return $true }
+    if (-not (Test-Path -LiteralPath $CreatorFile)) { if (-not $Optional) { Err 'Crie sua chave primeiro: criador criar' }; return $false }
+    try {
+        $cfg  = Get-Content -LiteralPath $CreatorFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $pass = Read-Secret '  Senha mestra do criador: '
+        if (-not $pass -and $Optional) { return $false }
+        $priv = Unprotect-Bytes ([Convert]::FromBase64String($cfg.d)) (New-SecretKeys $pass ([Convert]::FromBase64String($cfg.s)))
+        if ($null -eq $priv) { Err 'Senha mestra errada.'; return $false }
+        Set-CreatorSigner $priv
+        $true
+    } catch { Err 'O criador.key esta corrompido.'; $false }
+}
+
+# grava a chave publica no terminal e no app (e o que os outros usam pra verificar)
+function Set-CreatorPubInFiles([string]$pub) {
+    $tp = Join-Path $Root 'terminal.ps1'
+    $t  = [IO.File]::ReadAllText($tp, [Text.Encoding]::UTF8)
+    $t  = [regex]::Replace($t, "(?m)^\`$CreatorPub = '[^']*'", { "`$CreatorPub = '$pub'" })
+    [IO.File]::WriteAllText($tp, $t, (New-Object Text.UTF8Encoding $true))
+    $hp = "$Drive\Celular\index.html"
+    if (Test-Path -LiteralPath $hp) {
+        $h = [IO.File]::ReadAllText($hp, [Text.Encoding]::UTF8)
+        $h = [regex]::Replace($h, "const CREATOR_PUB = '[^']*';", { "const CREATOR_PUB = '$pub';" })
+        [IO.File]::WriteAllText($hp, $h, (New-Object Text.UTF8Encoding $false))
+    }
+    $script:CreatorPub = $pub; $script:CreatorVerifier = $null
+}
+
+function Get-Badge($p, [string]$name) {
+    if ($p.cs -and (Test-CreatorSig "$($p.i)|$($p.n)|$($p.t)|$($p.m)" ([string]$p.cs))) { return 'creator' }
+    if ($p.v) { $v = Test-VipToken ([string]$p.v); if ($v -and ([string]$v.n) -ieq $name) { return 'vip' } }
+    ''
+}
+
+function Write-Anuncio([string]$text, [bool]$animate) {
+    $lines = @('♦  ANUNCIO DO CRIADOR  ♦', '') + @(Wrap-Text $text 56)
+    Write-Host ''
+    Box $lines 'Yellow' 'White'
+    if ($animate) {
+        $pos = [Console]::CursorTop - ($lines.Count + 2)
+        for ($b = 0; $b -lt 4; $b++) {
+            $c = 'Yellow'; if ($b % 2 -eq 0) { $c = 'White' }
+            try { [Console]::SetCursorPosition(0, $pos); Box $lines $c 'White' } catch {}
+            Start-Sleep -Milliseconds 120
+        }
+        Play 523,90,659,90,784,90,1047,140,1568,260
+    }
+}
+
+function Creator([string]$arg) {
+    switch ("$arg".ToLower().Trim()) {
+        'criar' {
+            if ((Test-Path -LiteralPath $CreatorFile) -and -not (Confirm-Yes 'Ja existe uma chave de criador. Uma nova INVALIDA os convites VIP ja feitos. Continuar?')) { return }
+            Write-Host ''
+            Box @('CHAVE DE CRIADOR',
+                  'Gera sua assinatura digital (ECDSA P-256). Com ela todo mundo',
+                  've o seu selo ♦ no chat e pode resgatar seus convites VIP.',
+                  'A chave privada fica cifrada no pendrive com uma senha mestra.')
+            $p1 = Read-Secret '  Senha mestra do criador (pode ser a mesma do site, 6+): '
+            if ($p1.Length -lt 6) { Err 'Senha muito curta.'; return }
+            $p2 = Read-Secret '  Repita: '
+            if ($p1 -cne $p2) { Err 'As senhas nao batem.'; return }
+            Spin 'Gerando chave de criador...' 600
+            try {
+                $params = New-Object Security.Cryptography.CngKeyCreationParameters
+                $params.ExportPolicy = [Security.Cryptography.CngExportPolicies]::AllowPlaintextExport
+                $key  = [Security.Cryptography.CngKey]::Create([Security.Cryptography.CngAlgorithm]::ECDsaP256, $null, $params)
+                $priv = $key.Export([Security.Cryptography.CngKeyBlobFormat]::EccPrivateBlob)
+                $pub  = [Convert]::ToBase64String($key.Export([Security.Cryptography.CngKeyBlobFormat]::EccPublicBlob), 8, 64)
+                $salt = New-Object byte[] 16; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($salt)
+                $data = Protect-Bytes $priv (New-SecretKeys $p1 $salt)
+                @{ pub = $pub; s = [Convert]::ToBase64String($salt); d = [Convert]::ToBase64String($data) } |
+                    ConvertTo-Json | Set-Content -LiteralPath $CreatorFile -Encoding UTF8
+                Set-CreatorPubInFiles $pub
+                Set-CreatorSigner $priv
+            } catch { Err "Nao consegui criar a chave: $($_.Exception.Message)"; return }
+            Write-Host ''
+            Box @('♦ CHAVE DE CRIADOR CRIADA ♦', '',
+                  '1. Rode  site publicar  para todos conhecerem seu selo',
+                  '2. Faca um  backup-premium  (a chave vai junto)',
+                  '3. Crie convites:  vip criar <nome>') 'Yellow' 'White'
+            Play 523,80,659,80,784,80,1047,120,1568,280
+        }
+        'trancar' { $script:CreatorSigner = $null; Bot 'Selo de criador trancado nesta sessao.' }
+        '' {
+            Write-Host ''
+            $has = Test-Path -LiteralPath $CreatorFile
+            Write-Host '  Chave de criador  ' -NoNewline -ForegroundColor $script:T.A
+            if ($has) { Write-Host 'criada (cifrada em criador.key)' -ForegroundColor Green } else { Write-Host 'ainda nao criada  ->  criador criar' -ForegroundColor Yellow }
+            if ($has) {
+                $filePub = (Get-Content -LiteralPath $CreatorFile -Raw -Encoding UTF8 | ConvertFrom-Json).pub
+                Write-Host '  No terminal/app   ' -NoNewline -ForegroundColor $script:T.A
+                if ($filePub -eq $script:CreatorPub) { Write-Host 'chave publica gravada' -ForegroundColor Green } else { Write-Host 'DESATUALIZADA (rode criador criar de novo)' -ForegroundColor Red }
+                Spin 'Conferindo o site...' 400
+                $remote = Get-RemoteTerminal 5000
+                Write-Host '  No site           ' -NoNewline -ForegroundColor $script:T.A
+                if ($remote -and $remote.Text.Contains($filePub)) { Write-Host 'publicada: todos reconhecem seu selo' -ForegroundColor Green }
+                else { Write-Host 'ainda nao publicada  ->  site publicar' -ForegroundColor Yellow }
+            }
+            Write-Host '  Selo nesta sessao ' -NoNewline -ForegroundColor $script:T.A
+            if ($script:CreatorSigner) { Write-Host 'ativo' -ForegroundColor Green } else { Write-Host 'trancado (ativa ao entrar no chat)' -ForegroundColor DarkGray }
+        }
+        default { Err 'Use: criador | criador criar | criador trancar' }
+    }
+}
+
+function Redeem-Vip([string]$token) {
+    if ($IsPremium) { Bot 'Voce e o criador, nao precisa de convite :)'; return }
+    if (-not $script:CreatorPub) { Err 'Este AKENETIC ainda nao conhece a chave do criador. Digite atualizar e tente de novo.'; return }
+    $rv = Get-SiteJson 'vip-revogados.json'; if ($rv) { $script:VipRevoked = @($rv | ForEach-Object { [string]$_ }) }
+    Spin 'Conferindo a assinatura do criador...' 600
+    $info = Test-VipToken $token
+    if (-not $info) { Err 'Convite invalido ou cancelado pelo criador.'; return }
+    if ($script:Account -and ([string]$info.n) -ine [string]$script:Account.nome) {
+        Write-Host "  Atencao: o convite e para '$($info.n)', mas sua conta e '$($script:Account.nome)'. O selo so aparece com o nome do convite." -ForegroundColor Yellow
+    }
+    Set-Content -LiteralPath $VipFile -Value $token.Trim() -Encoding ASCII
+    $script:VipToken = $token.Trim(); $script:VipInfo = $info; $script:IsVip = $true
+    $Themes.ouro = $GoldTheme
+    Write-Host ''
+    Box @("☼  BEM-VINDO, VIP $($info.n)!  ☼", '',
+          'Liberado:  tema ouro  (com os efeitos dourados)',
+          "No chat seu nome aparece com ☼ (use o apelido '$($info.n)')") 'Yellow' 'White'
+    Play 523,80,659,80,784,80,1047,120,1568,280
+}
+
+function Vip([string]$arg) {
+    if ("$arg".Trim() -match '^AKNVIP\.') { Redeem-Vip $arg; return }
+    $sub, $rest = "$arg" -split '\s+', 2
+    switch ("$sub".ToLower()) {
+        '' {
+            if ($IsPremium) { Bot 'Voce e o criador. Crie convites com: vip criar <nome>'; return }
+            if ($script:IsVip) { Bot "Voce e VIP: $($script:VipInfo.n) (convite de $($script:VipInfo.d)). Use: tema ouro" }
+            else { Bot 'Ganhou um convite VIP? Cole aqui: vip AKNVIP.xxxx' }
+        }
+        'criar' {
+            if (-not $IsPremium) { Err 'So o criador cria convites.'; return }
+            $name = Cut "$rest" 16
+            if ($name.Length -lt 2) { Err 'Use: vip criar <apelido do amigo>   (o mesmo que ele usa no chat)'; return }
+            if (-not (Unlock-Creator)) { return }
+            $id = -join ((1..8) | ForEach-Object { '{0:x}' -f $Rnd.Next(16) })
+            $body = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(([ordered]@{ n = $name; id = $id; d = (Get-Date -Format 'dd/MM/yyyy') } | ConvertTo-Json -Compress)))
+            $token = "AKNVIP.$body.$(Sign-Text $body)"
+            Add-Content -LiteralPath $VipListFile -Value "$id`t$name`t$(Get-Date -Format 'dd/MM/yyyy')" -Encoding UTF8
+            try { Set-Clipboard -Value $token } catch {}
+            Write-Host ''
+            Box @("☼ CONVITE VIP PARA $($name.ToUpper()) ☼", '', 'Ja copiado! Mande pro seu amigo (WhatsApp, chat...).',
+                  'No PC:   vip <convite>        No app:   vip <convite>') 'Yellow' 'White'
+            Write-Host "  $token" -ForegroundColor DarkGray
+            Sfx ok
+        }
+        'lista' {
+            if (-not $IsPremium) { Err 'So o criador ve a lista.'; return }
+            if (-not (Test-Path -LiteralPath $VipListFile)) { Bot 'Nenhum convite criado ainda.'; return }
+            $revoked = @(); if (Test-Path -LiteralPath $RevokedFile) { $revoked = @(Get-Content -LiteralPath $RevokedFile -Raw | ConvertFrom-Json | ForEach-Object { $_ }) }
+            Write-Host ''
+            foreach ($l in Get-Content -LiteralPath $VipListFile -Encoding UTF8) {
+                $id, $n, $d = $l -split "`t"
+                $tag = '☼ ativo    '; $c = 'Yellow'; if ($revoked -contains $id) { $tag = 'x revogado '; $c = 'DarkGray' }
+                Write-Host "  $tag" -NoNewline -ForegroundColor $c
+                Write-Host ('{0,-18}{1}' -f $n, $d) -ForegroundColor $script:T.T
+            }
+        }
+        'revogar' {
+            if (-not $IsPremium) { Err 'So o criador revoga convites.'; return }
+            $name = Cut "$rest" 16
+            if (-not (Test-Path -LiteralPath $VipListFile)) { Err 'Nenhum convite criado ainda.'; return }
+            $ids = @(Get-Content -LiteralPath $VipListFile -Encoding UTF8 | Where-Object { ($_ -split "`t")[1] -ieq $name } | ForEach-Object { ($_ -split "`t")[0] })
+            if (-not $ids.Count) { Err "Nao achei convite para '$name'. Veja: vip lista"; return }
+            if (-not (Confirm-Yes "Cancelar o VIP de $name? (vale para todos os PCs e celulares)")) { return }
+            $revoked = @(); if (Test-Path -LiteralPath $RevokedFile) { $revoked = @(Get-Content -LiteralPath $RevokedFile -Raw | ConvertFrom-Json | ForEach-Object { $_ }) }
+            $all = @($revoked + $ids | Select-Object -Unique)
+            [IO.File]::WriteAllText($RevokedFile, (ConvertTo-Json -InputObject $all -Compress), (New-Object Text.UTF8Encoding $false))
+            $sent = Publish-Files @(@{ Path = 'vip-revogados.json'; File = $RevokedFile }) "AKENETIC: VIP de $name revogado"
+            if ($sent) { Bot "VIP de $name cancelado. Em ate alguns minutos ele perde o tema ouro e o selo." }
+        }
+        default { Err 'Use: vip [convite] | vip criar <nome> | vip lista | vip revogar <nome>' }
+    }
+}
+
+# VIP: se o criador revogou o convite, perde os extras
+function Check-VipRevoked {
+    if (-not $script:IsVip) { return }
+    $rv = Get-SiteJson 'vip-revogados.json'
+    if (-not $rv) { return }
+    $script:VipRevoked = @($rv | ForEach-Object { [string]$_ })
+    if ($script:VipRevoked -contains [string]$script:VipInfo.id) {
+        $script:IsVip = $false; $script:VipToken = $null
+        Err 'Seu convite VIP foi cancelado pelo criador.'
+    }
+}
+
+# ----------------------------------------------------------------- conta (login)
+# Perfil local, igual no PC e no celular: conta.dat = {nome, s: salt, d: dados cifrados com a senha}.
+# Sem servidor: a senha nunca sai do aparelho. "AKNCONTA.<base64 do registro>" leva a conta
+# pra outro aparelho (continua cifrada, la ela pede a mesma senha).
+$AccountFile = Join-Path $Root 'conta.dat'
+$script:Account = $null
+
+function New-AccountRecord([string]$nome, [string]$pass, [string]$criada = (Get-Date -Format 'yyyy-MM-dd')) {
+    $salt = New-Object byte[] 16; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($salt)
+    $inner = [ordered]@{ nome = $nome; criada = $criada } | ConvertTo-Json -Compress
+    $d = Protect-Bytes ([Text.Encoding]::UTF8.GetBytes($inner)) (New-SecretKeys $pass $salt)
+    [ordered]@{ nome = $nome; s = [Convert]::ToBase64String($salt); d = [Convert]::ToBase64String($d) }
+}
+
+function Open-AccountRecord($rec, [string]$pass) {
+    try {
+        $raw = Unprotect-Bytes ([Convert]::FromBase64String($rec.d)) (New-SecretKeys $pass ([Convert]::FromBase64String($rec.s)))
+        if ($null -eq $raw) { return $null }
+        $a = [Text.Encoding]::UTF8.GetString($raw) | ConvertFrom-Json
+        if ([string]$a.nome -ne [string]$rec.nome) { return $null }
+        $a
+    } catch { $null }
+}
+
+function Save-AccountRecord($rec) { $rec | ConvertTo-Json -Compress | Set-Content -LiteralPath $AccountFile -Encoding UTF8 }
+
+function Set-LoggedIn($a) {
+    $script:Account = $a
+    $script:ChatName = [string]$a.nome; Save-Config
+    Play 1047,60,1319,60,1568,120
+}
+
+function Register-Account {
+    Write-Host ''
+    $nome = Cut (Ask 'Escolha seu apelido (2 a 16 letras)' $env:USERNAME) 16
+    if ($nome.Length -lt 2) { Err 'Apelido muito curto.'; return $false }
+    $p1 = Read-Secret '  Crie uma senha (6+): '
+    if ($p1.Length -lt 6) { Err 'Senha muito curta (minimo 6).'; return $false }
+    $p2 = Read-Secret '  Repita a senha: '
+    if ($p1 -cne $p2) { Err 'As senhas nao batem.'; return $false }
+    Spin 'Criando sua conta...' 500
+    $rec = New-AccountRecord $nome $p1
+    Save-AccountRecord $rec
+    Set-LoggedIn ([pscustomobject]@{ nome = $nome; criada = (Get-Date -Format 'yyyy-MM-dd') })
+    Write-Host "  √ conta criada! Bem-vindo, $nome" -ForegroundColor Green
+    $true
+}
+
+function Import-Account {
+    Write-Host ''
+    Write-Host '  No celular: conta exportar  ->  copie o codigo e cole aqui (botao direito)' -ForegroundColor DarkGray
+    $code = (Ask 'Codigo da conta (AKNCONTA...)').Trim()
+    if ($code -notmatch '^AKNCONTA\.([A-Za-z0-9+/=]+)$') { Err 'Isso nao e um codigo de conta do AKENETIC.'; return $false }
+    try { $rec = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Matches[1])) | ConvertFrom-Json } catch { Err 'Codigo de conta quebrado.'; return $false }
+    if (-not $rec.nome -or -not $rec.s -or -not $rec.d) { Err 'Codigo de conta quebrado.'; return $false }
+    $pass = Read-Secret "  Senha da conta $($rec.nome): "
+    Spin 'Abrindo a conta...' 400
+    $a = Open-AccountRecord $rec $pass
+    if (-not $a) { Err 'Senha errada.'; return $false }
+    Save-AccountRecord ([ordered]@{ nome = $rec.nome; s = $rec.s; d = $rec.d })
+    Set-LoggedIn $a
+    Write-Host "  √ conta importada! Bem-vindo, $($a.nome)" -ForegroundColor Green
+    $true
+}
+
+function Login-Account {
+    Write-Host ''
+    if (-not (Test-Path -LiteralPath $AccountFile)) {
+        Box @('BEM-VINDO AO AKENETIC', '',
+              '1   criar uma conta nova',
+              '2   importar minha conta (codigo do celular ou de outro PC)') $script:T.P 'White'
+        for ($try = 0; $try -lt 3; $try++) {
+            $o = Ask 'Escolha 1 ou 2' '1'
+            if (($o -eq '2' -and (Import-Account)) -or ($o -ne '2' -and (Register-Account))) { return $true }
+        }
+        return $false
+    }
+    try { $rec = Get-Content -LiteralPath $AccountFile -Raw -Encoding UTF8 | ConvertFrom-Json } catch { Err 'conta.dat corrompido.'; return $false }
+    Box @("BEM-VINDO DE VOLTA, $($rec.nome)", 'Digite sua senha para entrar.') $script:T.P 'White'
+    for ($try = 1; $try -le 3; $try++) {
+        $pass = Read-Secret '  Senha: '
+        Spin 'Entrando...' 300
+        $a = Open-AccountRecord $rec $pass
+        if ($a) { Set-LoggedIn $a; return $true }
+        Err "Senha errada ($try/3)"
+    }
+    $false
+}
+
+function Account-Command([string]$arg) {
+    $a = $script:Account
+    switch ("$arg".ToLower().Trim()) {
+        '' {
+            Write-Host ''
+            $vip = 'nao'; if ($IsPremium) { $vip = 'criador (premium)' } elseif ($script:IsVip) { $vip = "VIP ($($script:VipInfo.n))" }
+            Box @("CONTA: $($a.nome)", "criada em $($a.criada)", "status: $vip", '',
+                  'conta exportar   leva a conta pro celular / outro PC',
+                  'conta senha      troca a senha') $script:T.P 'White'
+        }
+        'exportar' {
+            $rec = Get-Content -LiteralPath $AccountFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            $code = 'AKNCONTA.' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(([ordered]@{ nome = $rec.nome; s = $rec.s; d = $rec.d } | ConvertTo-Json -Compress)))
+            try { Set-Clipboard -Value $code } catch {}
+            Write-Host ''
+            Write-Host "  $code" -ForegroundColor DarkGray
+            Bot 'Codigo copiado! No app: na tela de login toque em "importar conta" e cole. A senha continua a mesma.'
+            Write-Host '  (o codigo vai cifrado: sem a sua senha ninguem abre)' -ForegroundColor DarkGray
+        }
+        'senha' {
+            $rec = Get-Content -LiteralPath $AccountFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            $old = Read-Secret '  Senha atual: '
+            if (-not (Open-AccountRecord $rec $old)) { Err 'Senha atual errada.'; return }
+            $p1 = Read-Secret '  Nova senha (6+): '
+            if ($p1.Length -lt 6) { Err 'Senha muito curta.'; return }
+            $p2 = Read-Secret '  Repita: '
+            if ($p1 -cne $p2) { Err 'As senhas nao batem.'; return }
+            Save-AccountRecord (New-AccountRecord ([string]$a.nome) $p1 ([string]$a.criada))
+            Bot 'Senha trocada! (no celular continua a antiga ate voce importar de novo)'; Sfx ok
+        }
+        default { Err 'Use: conta | conta exportar | conta senha' }
+    }
+}
+
+# ----------------------------------------------------------------- cofre de senhas (premium)
+# cofre.dat = {s: salt, d: JSON cifrado}. A chave fica na memoria so enquanto o cofre
+# esta aberto e ele tranca sozinho depois de 10 minutos sem uso.
+$VaultFile = Join-Path $Root 'cofre.dat'
+$script:Vault = $null
+
+function New-StrongPassword([int]$n = 16) {
+    $cs = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%&*?-_'.ToCharArray()
+    $b = New-Object byte[] ($n * 2); [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
+    -join (0..($n - 1) | ForEach-Object { $cs[([BitConverter]::ToUInt16($b, $_ * 2)) % $cs.Length] })
+}
+
+function Save-Vault {
+    $json = $script:Vault.Items | ConvertTo-Json -Compress -Depth 4
+    if (-not $json) { $json = '{}' }
+    $data = Protect-Bytes ([Text.Encoding]::UTF8.GetBytes($json)) $script:Vault.Keys
+    @{ s = $script:Vault.Salt; d = [Convert]::ToBase64String($data) } | ConvertTo-Json | Set-Content -LiteralPath $VaultFile -Encoding UTF8
+}
+
+function Open-Vault {
+    if ($script:Vault -and ((Get-Date) - $script:Vault.Used).TotalMinutes -lt 10) { $script:Vault.Used = Get-Date; return $true }
+    $script:Vault = $null
+    if (-not (Test-Path -LiteralPath $VaultFile)) {
+        Box @('CRIANDO SEU COFRE DE SENHAS', 'Escolha uma senha do cofre (8+). Sem ela nao da pra abrir!')
+        $p1 = Read-Secret '  Nova senha do cofre: '
+        if ($p1.Length -lt 8) { Err 'Senha muito curta (minimo 8).'; return $false }
+        $p2 = Read-Secret '  Repita: '
+        if ($p1 -cne $p2) { Err 'As senhas nao batem.'; return $false }
+        $salt = New-Object byte[] 16; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($salt)
+        $script:Vault = @{ Keys = (New-SecretKeys $p1 $salt); Salt = [Convert]::ToBase64String($salt); Items = [ordered]@{}; Used = Get-Date }
+        Save-Vault; Sfx ok
+        return $true
+    }
+    try {
+        $cfg  = Get-Content -LiteralPath $VaultFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $pass = Read-Secret '  Senha do cofre: '
+        $keys = New-SecretKeys $pass ([Convert]::FromBase64String($cfg.s))
+        $raw  = Unprotect-Bytes ([Convert]::FromBase64String($cfg.d)) $keys
+        if ($null -eq $raw) { Err 'Senha do cofre errada.'; return $false }
+        $items = [ordered]@{}
+        $obj = [Text.Encoding]::UTF8.GetString($raw) | ConvertFrom-Json
+        foreach ($p in $obj.PSObject.Properties) { $items[$p.Name] = @{ u = $p.Value.u; p = $p.Value.p; n = $p.Value.n; d = $p.Value.d } }
+        $script:Vault = @{ Keys = $keys; Salt = $cfg.s; Items = $items; Used = Get-Date }
+        $true
+    } catch { Err 'O cofre.dat esta corrompido.'; $false }
+}
+
+# copia a senha e, num processo escondido, limpa a area de transferencia em 20s
+# (so se ainda for a mesma senha; o processo recebe so o hash, nunca a senha)
+function Copy-Secret([string]$secret) {
+    Set-Clipboard -Value $secret
+    $hash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($secret))).Replace('-', '')
+    $cmd = @"
+Start-Sleep -Seconds 20
+`$c = Get-Clipboard -Raw
+if (`$c) {
+    `$h = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes(`$c.TrimEnd("``r","``n")))).Replace('-', '')
+    if (`$h -eq '$hash') { Set-Clipboard -Value ' ' }
+}
+"@
+    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
+    Start-Process powershell.exe -ArgumentList "-NoProfile -STA -WindowStyle Hidden -EncodedCommand $enc" -WindowStyle Hidden
+}
+
+function Vault([string]$arg) {
+    $sub, $name = $arg -split '\s+', 2
+    $sub = "$sub".ToLower(); $name = Cut "$name" 40
+    if ($sub -in 'ajuda', 'help') {
+        Write-Host ''
+        foreach ($r in @(@('cofre', 'lista o que esta guardado'), @('cofre adicionar <nome>', 'guarda usuario + senha (Enter gera uma forte)'),
+                         @('cofre ver <nome>', 'mostra o usuario e copia a senha (some em 20s)'), @('cofre mostrar <nome>', 'mostra a senha na tela'),
+                         @('cofre apagar <nome>', 'remove do cofre'), @('cofre gerar [tamanho]', 'so gera uma senha forte e copia'),
+                         @('cofre trancar', 'fecha o cofre agora'))) {
+            Write-Host ('    ' + $r[0].PadRight(26)) -NoNewline -ForegroundColor $script:T.P
+            Write-Host $r[1] -ForegroundColor $script:T.T
+        }
+        return
+    }
+    if ($sub -eq 'gerar') {
+        $n = 16; if ($name -match '^\d+$') { $n = [math]::Min(64, [math]::Max(8, [int]$name)) }
+        $pw = New-StrongPassword $n
+        Write-Host "  $pw" -ForegroundColor $script:T.A
+        Copy-Secret $pw; Bot 'Copiada! Some da area de transferencia em 20s.'; Sfx ok; return
+    }
+    if ($sub -eq 'trancar') { $script:Vault = $null; Bot 'Cofre trancado.'; return }
+    if (-not (Open-Vault)) { return }
+    $items = $script:Vault.Items
+    switch ($sub) {
+        '' {
+            Write-Host ''
+            Write-Host "  ══ COFRE ($($items.Count) itens) ══════════════════════" -ForegroundColor $script:T.S
+            if (-not $items.Count) { Write-Host '  vazio. Use: cofre adicionar instagram' -ForegroundColor DarkGray }
+            foreach ($k in $items.Keys) {
+                Write-Host ('  ♦ ' + $k.PadRight(22)) -NoNewline -ForegroundColor $script:T.P
+                Write-Host $items[$k].u -ForegroundColor DarkGray
+            }
+            Write-Host '  (cofre ajuda mostra os comandos)' -ForegroundColor DarkGray
+        }
+        { $_ -in 'adicionar', 'add', 'salvar' } {
+            if (-not $name) { Err 'Use: cofre adicionar <nome>   ex: cofre adicionar instagram'; return }
+            if ($items.Contains($name) -and -not (Confirm-Yes "'$name' ja existe. Substituir?")) { return }
+            $u  = Ask 'Usuario / e-mail (opcional)'
+            $pw = Read-Secret '  Senha (Enter = gerar uma forte): '
+            if (-not $pw) { $pw = New-StrongPassword 16; Write-Host '  senha forte gerada' -ForegroundColor Green }
+            $n  = Ask 'Observacao (opcional)'
+            $items[$name] = @{ u = $u; p = $pw; n = $n; d = (Get-Date -Format 'dd/MM/yyyy') }
+            Save-Vault
+            Bot "Guardado no cofre: $name"; Sfx ok
+        }
+        'ver' {
+            if (-not $items.Contains($name)) { Err "Nao achei '$name' no cofre."; return }
+            $it = $items[$name]
+            Write-Host ''
+            Write-Host "  ♦ $name" -ForegroundColor $script:T.P
+            if ($it.u) { Write-Host "    usuario: $($it.u)" -ForegroundColor White }
+            if ($it.n) { Write-Host "    obs:     $($it.n)" -ForegroundColor DarkGray }
+            Write-Host "    salvo em $($it.d)" -ForegroundColor DarkGray
+            Copy-Secret $it.p
+            Bot 'Senha copiada! Cole onde precisar. Ela some da area de transferencia em 20s.'; Sfx ok
+        }
+        'mostrar' {
+            if (-not $items.Contains($name)) { Err "Nao achei '$name' no cofre."; return }
+            if (-not (Confirm-Yes 'Mostrar a senha na tela? (confira se ninguem esta olhando)')) { return }
+            Write-Host "    $($items[$name].p)" -ForegroundColor $script:T.A
+        }
+        'apagar' {
+            if (-not $items.Contains($name)) { Err "Nao achei '$name' no cofre."; return }
+            if (-not (Confirm-Yes "Apagar '$name' do cofre?")) { return }
+            $items.Remove($name); Save-Vault; Bot "Removido: $name"
+        }
+        default { Err 'Use: cofre | cofre adicionar/ver/mostrar/apagar <nome> | cofre gerar | cofre ajuda' }
     }
 }
 
@@ -1857,7 +2654,7 @@ $BackupMagic = 'AKNBKP1'
 
 function Get-PremiumFiles {
     $list = @()
-    foreach ($n in 'terminal.ps1', 'premium.key', 'github.dat', 'config.txt', 'notas.txt', 'ficha.json') {
+    foreach ($n in 'terminal.ps1', 'premium.key', 'conta.dat', 'github.dat', 'cofre.dat', 'criador.key', 'vips.txt', 'config.txt', 'notas.txt', 'ficha.json') {
         $f = Join-Path $Root $n
         if (Test-Path -LiteralPath $f) { $list += @{ Rel = "Terminal/$n"; File = $f } }
     }
@@ -2021,6 +2818,8 @@ function Update-Terminal {
     if ($errs -or $remote.Text -notmatch 'AKENETIC TERMINAL') { Err 'O arquivo baixado veio com defeito. Nada foi alterado.'; return }
 
     Box @("Nova versao disponivel: v$($remote.Version)", "Voce tem: v$Version")
+    $nov = Get-SiteJson 'novidades.json'
+    if ($nov -and $nov.texto -and [string]$nov.versao -eq $remote.Version) { Show-Novidades $nov "O QUE TEM DE NOVO NA v$($remote.Version)" }
     Write-Host '  Instalar agora? (s/n): ' -NoNewline -ForegroundColor Yellow
     if ([Console]::ReadLine() -notmatch '^s') { return }
     try {
@@ -2038,14 +2837,20 @@ function Update-Terminal {
 
 function Write-Prompt {
     Write-Host ''
+    $gold = Test-GoldMode
     Write-Host '  ┌─[' -NoNewline -ForegroundColor $script:T.S
-    Write-Host 'AKENETIC' -NoNewline -ForegroundColor $script:T.P
+    if ($gold) {
+        Write-Host '♦ ' -NoNewline -ForegroundColor White
+        Write-Host "AKENETIC $GoldName" -NoNewline -ForegroundColor $script:T.P
+        Write-Host ' ♦' -NoNewline -ForegroundColor White
+    } else { Write-Host 'AKENETIC' -NoNewline -ForegroundColor $script:T.P }
     Write-Host ']─[' -NoNewline -ForegroundColor $script:T.S
     Write-Host (Get-Location).ProviderPath -NoNewline -ForegroundColor $script:T.A
     Write-Host ']─[' -NoNewline -ForegroundColor $script:T.S
     Write-Host (Get-Date -Format 'HH:mm') -NoNewline -ForegroundColor DarkGray
     Write-Host ']' -ForegroundColor $script:T.S
-    Write-Host '  └─» ' -NoNewline -ForegroundColor $script:T.S
+    if ($gold) { Write-Host '  └─♦ ' -NoNewline -ForegroundColor $script:T.P }
+    else { Write-Host '  └─» ' -NoNewline -ForegroundColor $script:T.S }
     [Console]::ForegroundColor = 'White'
 }
 
@@ -2054,25 +2859,43 @@ Set-Location "$Drive\"
 Clear-Host
 Cursor $false
 Write-Host ''
-Type-Out '  Inicializando AKENETIC OS...' $script:T.P 22
-Write-Host ''
-Show-Bar 'Carregando kernel' 500
-Show-Bar 'Montando pendrive' 400
-Show-Bar 'Calibrando cores' 400
-Show-Bar 'Afinando alto-falante' 300
+if (Test-GoldMode) {
+    Type-Out "  Inicializando AKENETIC $GoldName..." $script:T.P 22
+    Write-Host ''
+    Show-Bar 'Abrindo o cofre' 500
+    Show-Bar 'Polindo o ouro' 400
+    Show-Bar 'Verificando chave premium' 400
+    Show-Bar 'Afinando a fanfarra' 300
+} else {
+    Type-Out '  Inicializando AKENETIC OS...' $script:T.P 22
+    Write-Host ''
+    Show-Bar 'Carregando kernel' 500
+    Show-Bar 'Montando pendrive' 400
+    Show-Bar 'Calibrando cores' 400
+    Show-Bar 'Afinando alto-falante' 300
+}
 Sfx boot
 
 # abertura: nome ondulando no centro da tela
 Clear-Host
 for ($i = 0; $i -lt [math]::Max(0, [int](([Console]::WindowHeight - 14) / 2)); $i++) { Write-Host '' }
 Show-Banner -Animated
-if ($IsPremium) { Type-Center '*  EDICAO PREMIUM  *' 'Yellow' 30 }
+if ($IsPremium) { Type-Center '♦  EDICAO PREMIUM  ♦' 'Yellow' 30 }
 Type-Center 'terminal portatil  ·  leve para qualquer PC' $script:T.A 18
 Start-Sleep -Milliseconds 900
 
+# login: sem conta valida o terminal nao abre
+Cursor $true
+if (-not (Login-Account)) {
+    Write-Host ''
+    Write-Host '  Esqueceu a senha? Sem servidor nao da pra recuperar: apague Terminal\conta.dat para criar outra.' -ForegroundColor DarkGray
+    Sfx bye; Start-Sleep -Seconds 3; exit
+}
+Cursor $false
+
 Show-Header
 Write-Host ''
-Bot "Ola, $env:USERNAME! Bem-vindo ao seu terminal."
+Bot "Ola, $($script:Account.nome)! Bem-vindo ao seu terminal."
 if ((Get-Suspects).Count) { Err "Achei arquivos suspeitos na raiz do pendrive. Digite 'vacina'." }
 if (-not $IsPremium) {
     $upd = Get-RemoteTerminal 2500
@@ -2082,6 +2905,8 @@ if (-not $IsPremium) {
     }
 }
 Check-Aviso
+Check-Novidades
+Check-VipRevoked
 Cursor $true
 
 # ----------------------------------------------------------------- loop principal
@@ -2115,6 +2940,10 @@ while ($true) {
         '^aviso$'               { if ($IsPremium) { Aviso $arg } else { Err 'Comando exclusivo da edicao premium.' }; break }
         '^backup-premium$'      { if ($IsPremium) { Backup-Premium $arg } else { Err 'Comando exclusivo da edicao premium.' }; break }
         '^restaurar$'           { Restore-Premium $arg; break }
+        '^cofre$'               { if ($IsPremium) { Vault $arg } else { Err 'Comando exclusivo da edicao premium.' }; break }
+        '^criador$'             { if ($IsPremium) { Creator $arg } else { Err 'Comando exclusivo da edicao premium.' }; break }
+        '^vip$'                 { Vip $arg; break }
+        '^conta$'               { Account-Command $arg; break }
         '^pendrive$'            { Show-Pendrive; break }
         '^(ls|dir)$'            { if ($arg) { Run-Cmd $line } else { Show-Files }; break }
         '^cd$' {
@@ -2170,8 +2999,14 @@ while ($true) {
             Show-Bar 'Desligando AKENETIC' 500
             Sfx bye
             Clear-Host
-            Show-Banner -colors @('DarkGray', 'DarkGray', 'DarkGray', 'DarkGray', 'DarkGray', 'DarkGray')
-            Type-Center 'Ate a proxima!' $script:T.P 30
+            if (Test-GoldMode) {
+                Show-Banner -colors @('DarkYellow', 'DarkYellow', 'DarkYellow', 'DarkYellow', 'DarkRed', 'DarkRed')
+                if ($IsPremium) { Type-Center '♦  Ate a proxima, criador!  ♦' $script:T.P 30 }
+                else { Type-Center '☼  Ate a proxima, VIP!  ☼' $script:T.P 30 }
+            } else {
+                Show-Banner -colors @('DarkGray', 'DarkGray', 'DarkGray', 'DarkGray', 'DarkGray', 'DarkGray')
+                Type-Center 'Ate a proxima!' $script:T.P 30
+            }
             Start-Sleep -Milliseconds 600
             Cursor $true
             exit
