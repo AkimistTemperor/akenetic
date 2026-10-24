@@ -69,6 +69,10 @@
   .chip.mini { padding: 1px 10px; margin-left: 8px; font-size: 12px; }
   img.att { display: block; max-width: min(100%, 320px); max-height: 320px; border: 1px solid var(--s); border-radius: 6px; margin: 4px 0 8px; }
   .narr { border-left: 3px solid #c19c00; background: rgba(193,156,0,.08); padding: 6px 10px; margin: 8px 0; }
+  .aviso { border: 2px solid #f9f1a5; background: rgba(193,156,0,.12); padding: 10px 12px; margin: 10px 0; border-radius: 6px; animation: avisoPisca .35s steps(2, start) 6; }
+  .aviso .t { color: #f9f1a5; font-weight: 700; display: block; margin-bottom: 6px; }
+  .aviso .d { color: #767676; display: block; margin-top: 6px; font-size: 12px; }
+  @keyframes avisoPisca { to { border-color: #c19c00; } }
   #matrix { position: fixed; inset: 0; display: none; z-index: 10; background: #000; }
   #matrixHint { position: fixed; bottom: 24px; left: 0; right: 0; text-align: center; color: #555; z-index: 11; display: none; }
 </style>
@@ -725,6 +729,31 @@ async function showHistory(arg) {
   println(['══════════════════════════════', T.S]);
 }
 
+// ---------------- aviso geral do criador (aviso.json publicado pelo AKENETIC premium)
+let booted = false;
+async function checkAviso() {
+  if (!booted) return;
+  try {
+    const r = await fetch('aviso.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return;
+    const a = await r.json();
+    if (!a || !a.texto || !a.id || (a.ate && a.ate * 1000 < Date.now())) return;
+    if (store.get('avisoVisto', '') === String(a.id)) return;
+    store.set('avisoVisto', String(a.id));
+    showAviso(a);
+  } catch (e) {}
+}
+function showAviso(a) {
+  const b = el('div', 'aviso');
+  b.appendChild(el('span', 't', '📢 AVISO DO CRIADOR DO AKENETIC'));
+  b.appendChild(seg(clean(a.texto).slice(0, 500), 'White'));
+  if (a.data) b.appendChild(el('span', 'd', new Date(a.data * 1000).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })));
+  out.appendChild(b); scroll(true);
+  play([880, 60, 0, 50, 880, 60, 0, 50, 523, 100, 659, 100, 784, 100, 1047, 300]);
+  buzz([120, 60, 120]);
+  notify('📢 ' + clean(a.texto).slice(0, 90));
+}
+
 // aviso do sistema quando o app esta aberto mas em segundo plano
 function notify(body) {
   if (!('Notification' in window) || Notification.permission !== 'granted' || !document.hidden) return;
@@ -988,7 +1017,9 @@ $('#bar').addEventListener('submit', e => { e.preventDefault(); const v = inp.va
 addEventListener('resize', () => { document.querySelectorAll('.banner').forEach(b => b.style.fontSize = bannerSize(b.parentElement)); scroll(true); });
 
 // ------------------------------------------------------------------ inicializacao
-const APP_VERSION = '1.3';
+const APP_VERSION = '1.4';
+setInterval(checkAviso, 180000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkAviso(); });
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
 addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; if (mode === 'cmd') setMode('cmd'); });
 addEventListener('appinstalled', () => { installEvt = null; if (mode === 'cmd') setMode('cmd'); });
@@ -1018,9 +1049,11 @@ $('#boot').addEventListener('click', async () => {
   println(['', T.T]);
   await bot('Olá! Bem-vindo ao AKENETIC mobile.');
   const prevVersion = store.get('versao', '');
-  if (prevVersion && prevVersion !== APP_VERSION) await bot(`Atualizado para a v${APP_VERSION}! Agora dá pra instalar como app, abre sem internet e o chat guarda histórico.`);
+  if (prevVersion && prevVersion !== APP_VERSION) await bot(`Atualizado para a v${APP_VERSION}! Agora o criador do AKENETIC pode mandar avisos pra todo mundo.`);
   store.set('versao', APP_VERSION);
   busy = false;
+  booted = true;
+  checkAviso();
 }, { once: true });
 </script>
 </body>

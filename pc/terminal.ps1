@@ -20,9 +20,10 @@ $NotesFile  = Join-Path $Root 'notas.txt'
 $ConfigFile = Join-Path $Root 'config.txt'
 # a edicao premium e liberada pelo arquivo premium.key, que o 'compartilhar' nunca copia
 $IsPremium  = Test-Path -LiteralPath (Join-Path $Root 'premium.key')
-$Version    = '1.3'
+$Version    = '1.4'
 # de onde o comando 'atualizar' baixa a versao nova (publicada pelo 'site publicar' do premium)
-$UpdateBase = 'https://akimisttemperor.github.io/akenetic/pc/'
+$SiteBase   = 'https://akimisttemperor.github.io/akenetic/'
+$UpdateBase = "$($SiteBase)pc/"
 $Rnd        = New-Object Random
 $script:SoundOn = $true
 $script:History = New-Object System.Collections.Generic.List[string]
@@ -41,12 +42,14 @@ if ($IsPremium) {
 $script:ThemeName = 'verde'
 $script:ChatName  = $env:USERNAME
 $script:ChatRoom  = ''
+$script:AvisoSeen = ''
 if (Test-Path $ConfigFile) {
     foreach ($l in Get-Content $ConfigFile -Encoding UTF8) {
         if ($l -match '^tema=(\w+)$' -and $Themes.ContainsKey($Matches[1])) { $script:ThemeName = $Matches[1] }
         if ($l -eq 'som=off') { $script:SoundOn = $false }
         if ($l -match '^nome=(.+)$') { $script:ChatName = $Matches[1] }
         if ($l -match '^sala=(.+)$') { $script:ChatRoom = $Matches[1] }
+        if ($l -match '^aviso=(.+)$') { $script:AvisoSeen = $Matches[1] }
     }
 }
 $script:T = $Themes[$script:ThemeName]
@@ -55,7 +58,8 @@ function Save-Config {
     @("tema=$script:ThemeName",
       "som=$(if ($script:SoundOn) {'on'} else {'off'})",
       "nome=$script:ChatName",
-      "sala=$script:ChatRoom") | Set-Content $ConfigFile -Encoding UTF8
+      "sala=$script:ChatRoom",
+      "aviso=$script:AvisoSeen") | Set-Content $ConfigFile -Encoding UTF8
 }
 
 # ----------------------------------------------------------------- sons
@@ -264,6 +268,8 @@ if ($IsPremium) {
     $Commands.Insert($Commands.Count - 1, 'site publicar [msg]', '[PREMIUM] envia D:\Celular\index.html pro GitHub')
     $Commands.Insert($Commands.Count - 1, 'site config', '[PREMIUM] configura o token do GitHub')
     $Commands.Insert($Commands.Count - 1, 'site abrir', '[PREMIUM] abre o site no navegador')
+    $Commands.Insert($Commands.Count - 1, 'aviso [3d] <texto>', '[PREMIUM] aviso geral pra celulares e pendrives')
+    $Commands.Insert($Commands.Count - 1, 'aviso apagar', '[PREMIUM] tira o aviso do ar')
     $Commands['tema <nome>'] = 'verde | azul | roxo | vermelho | arcoiris | ouro'
 }
 
@@ -1552,13 +1558,21 @@ function Site-Status {
     else { Write-Host '  √ o site esta igual ao pendrive' -ForegroundColor Green }
 }
 
-# envia so o que mudou, tudo num commit (API Git Data: blobs -> tree -> commit -> ref)
 function Site-Publish([string]$msg) {
+    $sent = Publish-Files (Get-SiteFiles) $msg
+    if ($sent | Where-Object { $_.Path -eq 'pc/terminal.ps1' }) {
+        Bot "Seus amigos ja podem digitar 'atualizar' para receber a v$Version."
+    }
+}
+
+# envia so o que mudou, tudo num commit (API Git Data: blobs -> tree -> commit -> ref);
+# devolve os arquivos enviados (vazio se nada mudou ou se deu erro)
+function Publish-Files($files, [string]$msg) {
     if (-not (Unlock-GitHub)) { return }
     Write-Host ''
     Spin 'Conectando ao GitHub...' 400
     try { $remote = Get-RemoteTree } catch { Err (Get-GhError $_); return }
-    $changed = @(foreach ($f in Get-SiteFiles) {
+    $changed = @(foreach ($f in $files) {
         if (-not (Test-Path -LiteralPath $f.File)) { continue }
         $bytes = [IO.File]::ReadAllBytes($f.File)
         if ($remote.Files[$f.Path] -ne (Get-GitBlobSha $bytes)) { $f.Bytes = $bytes; $f }
@@ -1589,8 +1603,93 @@ function Site-Publish([string]$msg) {
     $check = $changed | Where-Object { $_.Path -eq 'index.html' } | Select-Object -First 1
     if (-not $check) { $check = $changed[0] }
     Wait-Site $check.Path $check.Bytes
-    if ($changed | Where-Object { $_.Path -eq 'pc/terminal.ps1' }) {
-        Bot "Seus amigos ja podem digitar 'atualizar' para receber a v$Version."
+    $changed
+}
+
+# ----------------------------------------------------------------- avisos gerais
+# O premium publica aviso.json no site; celulares e pendrives conferem ao abrir
+# e a cada 3 minutos. So quem tem o token consegue publicar, entao nao da pra falsificar.
+$AvisoFile = "$Drive\Celular\aviso.json"
+$script:AvisoChecked = [DateTime]::MinValue
+
+function Wrap-Text([string]$text, [int]$width) {
+    $lines = @(); $cur = ''
+    foreach ($w in ($text -split '\s+')) {
+        if ($cur -and ($cur.Length + 1 + $w.Length) -gt $width) { $lines += $cur; $cur = $w }
+        elseif ($cur) { $cur += " $w" } else { $cur = $w }
+    }
+    if ($cur) { $lines += $cur }
+    $lines
+}
+
+function Get-Aviso([int]$timeout = 4000) {
+    try {
+        $req = [Net.HttpWebRequest]::Create("$($SiteBase)aviso.json?akn=$([DateTime]::UtcNow.Ticks)")
+        $req.Timeout = $timeout; $req.ReadWriteTimeout = $timeout; $req.UserAgent = 'AKENETIC'
+        $resp = $req.GetResponse()
+        $rd = New-Object IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8)
+        $a = $rd.ReadToEnd().TrimStart([char]0xFEFF) | ConvertFrom-Json; $resp.Close()
+        if (-not $a.texto -or -not $a.id) { return $null }
+        if ($a.ate -and [long]$a.ate -lt [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) { return $null }
+        $a
+    } catch { $null }
+}
+
+function Show-Aviso($a, [switch]$Quiet) {
+    $when = ''
+    try { $when = [DateTimeOffset]::FromUnixTimeSeconds([long]$a.data).LocalDateTime.ToString('dd/MM/yyyy HH:mm') } catch {}
+    $lines = @('>>> AVISO DO CRIADOR DO AKENETIC <<<', '') + @(Wrap-Text (Clean ([string]$a.texto)) 56) + @('', $when)
+    Write-Host ''
+    Box $lines 'Yellow' 'White'
+    if ($Quiet) { return }
+    $pos = [Console]::CursorTop - ($lines.Count + 2)
+    for ($b = 0; $b -lt 6; $b++) {
+        $c = 'Yellow'; if ($b % 2 -eq 0) { $c = 'DarkYellow' }
+        try { [Console]::SetCursorPosition(0, $pos); Box $lines $c 'White' } catch {}
+        Play 880,60
+        Start-Sleep -Milliseconds 110
+    }
+    Play 523,100,659,100,784,100,1047,300
+}
+
+# chamado ao abrir e antes de cada comando; so vai na internet a cada 3 minutos
+function Check-Aviso {
+    if (((Get-Date) - $script:AvisoChecked).TotalSeconds -lt 180) { return }
+    $script:AvisoChecked = Get-Date
+    $a = Get-Aviso 2500
+    if ($a -and [string]$a.id -ne $script:AvisoSeen) {
+        Show-Aviso $a
+        $script:AvisoSeen = [string]$a.id; Save-Config
+    }
+}
+
+function Aviso([string]$arg) {
+    if (-not $arg) {
+        Spin 'Buscando o aviso atual...' 400
+        $a = Get-Aviso
+        if ($a) { Show-Aviso $a -Quiet; Write-Host '  (para tirar do ar: aviso apagar)' -ForegroundColor DarkGray }
+        else { Bot 'Nenhum aviso no ar agora.' }
+        Write-Host '  Use: aviso <texto>   |   aviso 3d <texto> (vale 3 dias, padrao 7)   |   aviso apagar' -ForegroundColor DarkGray
+        return
+    }
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    if ($arg -match '^(apagar|remover|limpar)$') {
+        $obj = [ordered]@{ id = "$now"; texto = ''; data = $now; ate = 0 }
+        $what = 'Aviso removido'
+    } else {
+        $dias = 7; if ($arg -match '^(\d{1,2})d\s+(.+)$') { $dias = [math]::Max(1, [int]$Matches[1]); $arg = $Matches[2] }
+        $texto = Cut $arg 500
+        $obj = [ordered]@{ id = "$now"; texto = $texto; data = $now; ate = $now + $dias * 86400 }
+        Show-Aviso $obj -Quiet
+        Write-Host "  Vale por $dias dia(s). Enviar para TODOS os celulares e pendrives? (s/n): " -NoNewline -ForegroundColor Yellow
+        if ([Console]::ReadLine() -notmatch '^s') { Bot 'Cancelado.'; return }
+        $what = 'Aviso enviado'
+    }
+    [IO.File]::WriteAllText($AvisoFile, ($obj | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false))
+    $sent = Publish-Files @(@{ Path = 'aviso.json'; File = $AvisoFile }) "AKENETIC: $($what.ToLower())"
+    if ($sent) {
+        $script:AvisoSeen = $obj.id; Save-Config
+        Bot "$what! Os celulares e pendrives veem ao abrir ou em ate 3 minutos."
     }
 }
 
@@ -1737,10 +1836,12 @@ if (-not $IsPremium) {
         Play 1047,60,1319,90
     }
 }
+Check-Aviso
 Cursor $true
 
 # ----------------------------------------------------------------- loop principal
 while ($true) {
+    Check-Aviso
     Write-Prompt
     $line = [Console]::ReadLine()
     [Console]::ForegroundColor = 'Gray'
@@ -1766,6 +1867,7 @@ while ($true) {
         '^compartilhar$'        { Share $arg; break }
         '^site$'                { if ($IsPremium) { Site $arg } else { Err 'Comando exclusivo da edicao premium.' }; break }
         '^atualizar$'           { Update-Terminal; break }
+        '^aviso$'               { if ($IsPremium) { Aviso $arg } else { Err 'Comando exclusivo da edicao premium.' }; break }
         '^pendrive$'            { Show-Pendrive; break }
         '^(ls|dir)$'            { if ($arg) { Run-Cmd $line } else { Show-Files }; break }
         '^cd$' {
