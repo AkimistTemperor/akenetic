@@ -175,7 +175,24 @@ function Play([int[]]$notes) {
     }
 }
 
+# efeitos do ONI de verdade (taiko, katana, gongo) em Terminal\sons: so no pendrive do criador.
+# Tocam sem travar o terminal (a musica da trilha continua por baixo).
+$script:OniSfx = $null
+function Enable-OniSfx {
+    $dir = Join-Path $Root 'sons'
+    if (-not (Test-Path -LiteralPath $dir)) { return }
+    $map = @{}
+    foreach ($f in Get-ChildItem -LiteralPath $dir -Filter *.wav -File) {
+        try { $p = New-Object Media.SoundPlayer $f.FullName; $p.Load(); $map[$f.BaseName] = $p } catch {}
+    }
+    if ($map.Count) { $script:OniSfx = $map }
+}
+
 function Sfx([string]$name) {
+    if ($script:OniSfx -and $script:OniSfx[$name]) {
+        if ($script:SoundOn) { try { $script:OniSfx[$name].Play() } catch {} }
+        return
+    }
     if (Test-OniMode) {
         switch ($name) {
             'enter' { Play 196,15; return }
@@ -706,20 +723,84 @@ function Start-OniFundo {
     # espera o fundo aparecer antes de deixar o terminal transparente
     Start-Sleep -Milliseconds 1200
     Set-Transparent $true
+    Start-OniMusic
     $true
 }
 function Stop-OniFundo {
     if (Test-OniFundo) { try { $script:OniFundo.Kill() } catch {} }
     $script:OniFundo = $null
-$script:PanelCols = 0
+    Stop-OniMusic
     Set-Transparent $false
 }
 
-# oni      -> liga o fundo matrix (se tiver sido desligado)
-# oni off  -> desliga o fundo e deixa o terminal opaco
+# ----------------------------------------------------------------- trilha do ONI
+# Musica da pasta D:\Trilha (todas, em ordem, em loop). Toca numa thread em segundo plano do
+# proprio AKENETIC: sem janela, sem roubar o foco, e para sozinha quando o terminal fecha.
+$TrilhaDir = "$Drive\Trilha"
+$script:Music = $null
+
+function Get-TrilhaFiles {
+    @(Get-ChildItem -LiteralPath $TrilhaDir -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -match '^\.(mp3|wav|wma|m4a|aac)$' } | Sort-Object Name | ForEach-Object { $_.FullName })
+}
+
+function Start-OniMusic {
+    if ($script:Music -or -not $script:SoundOn) { return }
+    $files = Get-TrilhaFiles
+    if (-not $files.Count) { return }
+    $sync = [hashtable]::Synchronized(@{ Stop = $false; Now = '' })
+    $rs = [runspacefactory]::CreateRunspace(); $rs.ApartmentState = 'STA'; $rs.ThreadOptions = 'ReuseThread'; $rs.Open()
+    $ps = [powershell]::Create(); $ps.Runspace = $rs
+    [void]$ps.AddScript({
+        param($files, $sync, $vol)
+        Add-Type -AssemblyName PresentationCore, System.Windows.Forms
+        $m = New-Object System.Windows.Media.MediaPlayer
+        $m.Volume = $vol
+        while (-not $sync.Stop) {
+            foreach ($f in $files) {
+                if ($sync.Stop) { break }
+                $sync.Now = [IO.Path]::GetFileNameWithoutExtension($f)
+                $m.Open([Uri]$f); $m.Play()
+                $t0 = [DateTime]::Now
+                while (-not $sync.Stop) {
+                    # o player precisa das mensagens do Windows andando para tocar
+                    [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 200
+                    $d = $m.NaturalDuration
+                    if ($d.HasTimeSpan -and $m.Position -ge $d.TimeSpan.Subtract([TimeSpan]::FromMilliseconds(300))) { break }
+                    if (-not $d.HasTimeSpan -and ([DateTime]::Now - $t0).TotalSeconds -gt 10) { break }   # arquivo que nao abre
+                }
+                $m.Stop()
+            }
+        }
+        $m.Close()
+    }).AddArgument($files).AddArgument($sync).AddArgument(0.45)
+    $script:Music = @{ PS = $ps; RS = $rs; Sync = $sync; Handle = $ps.BeginInvoke() }
+}
+
+function Stop-OniMusic {
+    if (-not $script:Music) { return }
+    $script:Music.Sync.Stop = $true
+    $t0 = Get-Date
+    while (-not $script:Music.Handle.IsCompleted -and ((Get-Date) - $t0).TotalSeconds -lt 2) { Start-Sleep -Milliseconds 50 }
+    try { $script:Music.PS.Dispose(); $script:Music.RS.Dispose() } catch {}
+    $script:Music = $null
+}
+
+# som ligado/desligado tambem liga/desliga a trilha (so com o fundo do ONI aberto)
+function Update-OniMusic { if ($script:SoundOn -and (Test-OniFundo)) { Start-OniMusic } else { Stop-OniMusic } }
+
+# oni         -> liga o fundo matrix (e a trilha), se tiver sido desligado
+# oni off     -> desliga o fundo e deixa o terminal opaco
+# oni musica  -> liga / desliga so a trilha
 function Start-OniMatrix($arg) {
     if (-not $OniScript) { Err 'oni-matrix.ps1 nao encontrado (coloque em D:\Terminal ou D:\Oni).'; return }
     if ($script:InWT) { Err 'O fundo matrix precisa do console classico (abra pelo ABRIR TERMINAL.bat).'; return }
+    if ("$arg".ToLower().Trim() -match '^m[uú]sica$') {
+        if ($script:Music) { Stop-OniMusic; Bot 'Trilha desligada.'; return }
+        if (-not (Get-TrilhaFiles).Count) { Err "Nenhuma musica em $TrilhaDir (mp3, wav, wma, m4a)."; return }
+        if (-not $script:SoundOn) { Err 'O som esta desligado (som on).'; return }
+        Start-OniMusic; Bot "Tocando: $([IO.Path]::GetFileNameWithoutExtension((Get-TrilhaFiles)[0]))"; return
+    }
     if ("$arg".ToLower().Trim() -eq 'off') { Stop-OniFundo; Bot 'Fundo matrix desligado. (oni liga de novo)'; return }
     if (Test-OniFundo) { Bot 'O fundo matrix ja esta ligado. (oni off desliga)'; return }
     if (Start-OniFundo) { Bot 'Fundo matrix ligado.' } else { Err 'Nao consegui ligar o fundo matrix.' }
@@ -917,10 +998,13 @@ if ($IsOperator) {
 }
 if ($IsCreator) {
     $Commands.Insert($Commands.Count - 1, 'central', '[CRIADOR] painel de controle do AKENETIC')
+    $Commands.Insert($Commands.Count - 1, 'ligar [n | nome]', '[CRIADOR] liga para um VIP e abre uma reuniao privada')
+    $Commands.Insert($Commands.Count - 1, 'reunioes', '[CRIADOR] abre a pasta com as atas das reunioes')
     $Commands.Insert($Commands.Count - 1, 'operador criar <nome>', '[CRIADOR] gera um kit de operador para um amigo')
     $Commands.Insert($Commands.Count - 1, 'operador lista | revogar <n>', '[CRIADOR] operadores / cancela um')
     $Commands.Insert($Commands.Count - 1, 'mascara', '[CRIADOR] a mascara oni')
     $Commands.Insert($Commands.Count - 1, 'oni | oni off', '[CRIADOR] liga / desliga o fundo matrix com a mascara')
+    $Commands.Insert($Commands.Count - 1, 'oni musica', '[CRIADOR] liga / desliga a trilha (pasta D:\Trilha)')
     $Commands.Insert($Commands.Count - 1, 'site', '[PREMIUM] situacao do site do celular')
     $Commands.Insert($Commands.Count - 1, 'site publicar [msg]', '[PREMIUM] envia D:\Celular\index.html pro GitHub')
     $Commands.Insert($Commands.Count - 1, 'site config', '[PREMIUM] configura o token do GitHub')
@@ -2025,7 +2109,7 @@ function Chat-Command([string]$text) {
         '^/limpar$'           { Chat-Header; break }
         '^/(ajuda|help|\?)$'  { Chat-Help; break }
         '^/som$' {
-            $script:SoundOn = -not $script:SoundOn; Save-Config
+            $script:SoundOn = -not $script:SoundOn; Save-Config; Update-OniMusic
             Write-ChatNotice "som $(if ($script:SoundOn) {'ligado'} else {'desligado'})"; break
         }
         '^/quem$' {
@@ -2194,21 +2278,27 @@ function Chat-Command([string]$text) {
     }
 }
 
-function Open-ChatRoom {
+# $Meeting: reuniao da ligacao VIP (sala e senha ja vem combinadas pela chamada, sem perguntas)
+function Open-ChatRoom([string]$PresetRoom = '', [string]$PresetPass = '', $Meeting = $null) {
     Write-Host ''
-    Box @('CHAT AKENETIC  ·  chat, arquivos e RPG',
-          'Combine com seu amigo o MESMO codigo de sala e a MESMA senha.',
-          'Funciona junto com o AKENETIC do celular.')
-    Write-Host ''
+    if (-not $Meeting) {
+        Box @('CHAT AKENETIC  ·  chat, arquivos e RPG',
+              'Combine com seu amigo o MESMO codigo de sala e a MESMA senha.',
+              'Funciona junto com o AKENETIC do celular.')
+        Write-Host ''
+    }
     if ($script:Account) {
         $name = [string]$script:Account.nome
         Write-Host "  Entrando como " -NoNewline -ForegroundColor $script:T.A; Write-Host $name -ForegroundColor White
     } else { $name = Ask 'Seu apelido' $script:ChatName }
     if ($name.Length -gt 16) { $name = $name.Substring(0, 16) }
-    $room = Ask 'Codigo da sala' $script:ChatRoom
-    if ($name.Length -lt 2 -or $room.Length -lt 4) { Err 'Apelido precisa de 2+ letras e o codigo da sala de 4+.'; return }
-    $pass = Read-Secret '  Senha da sala: '
-    if ($pass.Length -lt 4) { Err 'A senha precisa de pelo menos 4 caracteres.'; return }
+    if ($Meeting) { $room = $PresetRoom; $pass = $PresetPass }
+    else {
+        $room = Ask 'Codigo da sala' $script:ChatRoom
+        if ($name.Length -lt 2 -or $room.Length -lt 4) { Err 'Apelido precisa de 2+ letras e o codigo da sala de 4+.'; return }
+        $pass = Read-Secret '  Senha da sala: '
+        if ($pass.Length -lt 4) { Err 'A senha precisa de pelo menos 4 caracteres.'; return }
+    }
     if ($IsOperator -and -not $script:OpSigner) {
         Write-Host '  ♠ Selo de operador: digite a senha do seu kit (Enter entra sem selo)' -ForegroundColor DarkGray
         if (Unlock-Operator -Optional) { Write-Host '  √ selo de operador ativo' -ForegroundColor Green }
@@ -2219,7 +2309,8 @@ function Open-ChatRoom {
     }
     if ($script:VipRevoked.Count -eq 0) { $rv = Get-SiteJson 'vip-revogados.json'; if ($rv) { $script:VipRevoked = @($rv | ForEach-Object { [string]$_ }) } }
 
-    $script:ChatName = $name; $script:ChatRoom = $room; Save-Config
+    # a sala da reuniao e descartavel: nao substitui a sala de sempre no config
+    $script:ChatName = $name; if (-not $Meeting) { $script:ChatRoom = $room }; Save-Config
     Spin 'Gerando chave secreta...' 400
     $script:ChatKeys         = New-ChatKeys $room.ToLower() $pass
     $script:ChatOwnIds       = New-Object 'System.Collections.Generic.HashSet[string]'
@@ -2255,8 +2346,14 @@ function Open-ChatRoom {
     [void]$ps.BeginInvoke()
 
     Chat-Header
+    if ($Meeting) {
+        Write-ChatNotice "☎ REUNIAO com $($Meeting.Com)  ·  so voces dois tem a chave desta sala" $script:T.A
+        Write-ChatNotice "codigo de seguranca: $($Meeting.Code)  (o mesmo deve aparecer na tela do outro)" 'Yellow'
+        if ($Meeting.Pauta) { Write-ChatNotice "PAUTA: $($Meeting.Pauta)" 'White' }
+    }
     Write-ChatNotice 'conectando...' $script:T.A
     if (-not (Send-Chat 'join' '' (Here-Extra))) { Write-ChatNotice 'nao consegui enviar. Tem internet?' Red; Sfx err }
+    if ($Meeting -and $Meeting.Pauta -and $Meeting.Host) { [void](Send-Chat 'msg' "PAUTA DA REUNIAO: $($Meeting.Pauta)") }
     Send-Presence 'on'; $script:NextPresence = (Get-Date).AddMinutes(10)
     while ([Console]::KeyAvailable) { [void][Console]::ReadKey($true) }
     Draw-Input
@@ -2305,6 +2402,7 @@ function Open-ChatRoom {
     $state.Stop = $true
     try { if ($state.Req) { $state.Req.Abort() } } catch {}
     [void]$ps.BeginStop($null, $null)
+    if ($Meeting) { Export-MeetingAta $Meeting }
     Sfx bye
 }
 
@@ -3170,7 +3268,9 @@ function Clear-Sparks($sparks) {
 
 # leitura do prompt com particulas (Enter, Backspace, Esc e setas pra cima/baixo pro historico)
 function Read-PromptLine {
-    if (-not (Test-FxMode)) { return [Console]::ReadLine() }
+    # VIP com o canal de ligacao aberto: le tecla a tecla para a chamada poder tocar a qualquer hora
+    $fx = Test-FxMode
+    if (-not $fx -and -not $script:RingSync) { return [Console]::ReadLine() }
     $sparks = New-Object System.Collections.Generic.List[object]
     $buf = ''; $hist = $script:History.Count
     $startLeft = [Console]::CursorLeft; $startTop = [Console]::CursorTop
@@ -3193,7 +3293,8 @@ function Read-PromptLine {
             elseif (-not [char]::IsControl($k.KeyChar)) { $buf += $k.KeyChar; Write-Host $k.KeyChar -NoNewline -ForegroundColor White }
             continue
         }
-        if ((Get-Date) -ge $next) { $next = (Get-Date).AddMilliseconds(110); Update-Sparks $sparks ([Console]::CursorTop) }
+        if ($script:RingSync -and $script:RingSync.Ring) { Clear-Sparks $sparks; Write-Host ''; return "$([char]1)ring" }
+        if ($fx -and (Get-Date) -ge $next) { $next = (Get-Date).AddMilliseconds(110); Update-Sparks $sparks ([Console]::CursorTop) }
         Start-Sleep -Milliseconds 15
     }
 }
@@ -4364,6 +4465,213 @@ function Same-Bytes([byte[]]$a, [byte[]]$b) {
     [Convert]::ToBase64String($h.ComputeHash($a)) -eq [Convert]::ToBase64String($h.ComputeHash($b))
 }
 
+# ----------------------------------------------------------------- LIGACAO VIP (reuniao do criador)
+# O criador "liga" para um VIP: um toque assinado com a chave do criador vai para o canal do VIP
+# (topico derivado do id do convite). O PC/celular do VIP toca; se ele atende, os dois fazem uma
+# troca de chaves descartaveis (ECDH) e o criador manda, cifrados com ela, o nome e a senha de uma
+# sala nova so deles. Ninguem de fora le a sala, e um toque falso nao passa na assinatura.
+# Mensagens do canal: ring (criador) -> ok/no (VIP) -> room (criador); cancel se desistir.
+$MeetingsDir = "$Drive\Reunioes"
+$script:RingSync = $null
+
+function Get-RingTopic([string]$vipId) { 'akn-ring-' + (Get-Hex "akenetic-ring|$vipId" 12) }
+
+function Send-Ring([string]$topic, $obj) {
+    try { Invoke-RestMethod -Method Post -Uri "https://ntfy.sh/$topic" -Body ($obj | ConvertTo-Json -Compress) -ContentType 'text/plain' -TimeoutSec 10 | Out-Null; $true } catch { $false }
+}
+
+# mensagens do canal dos ultimos minutos, ja decodificadas
+function Read-Ring([string]$topic, [string]$since = '2m') {
+    try {
+        $req = [Net.HttpWebRequest]::Create("https://ntfy.sh/$topic/json?poll=1&since=$since")
+        $req.Timeout = 5000; $req.ReadWriteTimeout = 5000
+        $resp = $req.GetResponse(); $txt = (New-Object IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8)).ReadToEnd(); $resp.Close()
+    } catch { return @() }
+    @(foreach ($l in $txt -split "`n") {
+        if (-not $l.Trim()) { continue }
+        try { $o = $l | ConvertFrom-Json; if ($o.event -eq 'message') { $o.message | ConvertFrom-Json } } catch {}
+    })
+}
+
+function Get-EphemeralXY($eph) { $xy = New-Object byte[] 64; [Array]::Copy($eph.PublicKey.ToByteArray(), 8, $xy, 0, 64); [Convert]::ToBase64String($xy) }
+function New-RandomHex([int]$bytes) { $b = New-Object byte[] $bytes; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); ($b | ForEach-Object { $_.ToString('x2') }) -join '' }
+
+# 4 digitos tirados da chave combinada: aparecem iguais nas duas telas se ninguem se meteu no meio
+function Get-CallCode([byte[]]$km) {
+    $h = [Security.Cryptography.SHA256]::Create().ComputeHash([byte[]]($km + [byte]3))
+    '{0:D4}' -f (((([int]$h[0]) -shl 8) -bor $h[1]) % 10000)
+}
+
+function Get-VipList {
+    if (-not (Test-Path -LiteralPath $VipListFile)) { return @() }
+    $rev = @(); try { if (Test-Path -LiteralPath $RevokedFile) { $rev = @((Get-Content -LiteralPath $RevokedFile -Raw | ConvertFrom-Json) | ForEach-Object { [string]$_ }) } } catch {}
+    @(foreach ($l in Get-Content -LiteralPath $VipListFile -Encoding UTF8) {
+        $id, $n, $d = $l -split "`t"
+        if ($id -and $n -and $rev -notcontains $id) { [pscustomobject]@{ Id = $id; Nome = $n; Data = $d } }
+    })
+}
+
+# toque do telefone (dois trinados)
+function Play-Ring { Play 988,90,0,40,988,90,0,40,1319,160 }
+
+# criador: ligar  |  ligar <numero ou nome>
+function Call-Vip([string]$arg) {
+    $vips = Get-VipList
+    if (-not $vips.Count) { Bot 'Nenhum VIP ainda. Crie um convite com: vip criar <nome>'; return }
+    if (-not $arg) {
+        Write-Host ''
+        Write-Host '  ══ LIGAR PARA UM VIP ═══════════════════════════' -ForegroundColor $script:T.S
+        for ($i = 0; $i -lt $vips.Count; $i++) {
+            Write-Host ('  [{0}]  ' -f ($i + 1)) -NoNewline -ForegroundColor $script:T.A
+            Write-Host ('★ {0}' -f $vips[$i].Nome) -NoNewline -ForegroundColor White
+            Write-Host ("   VIP desde $($vips[$i].Data)") -ForegroundColor DarkGray
+        }
+        Write-Host ''
+        $arg = Ask 'Ligar para (numero ou nome; Enter cancela)'
+        if (-not $arg) { return }
+    }
+    $vip = $null
+    if ($arg -match '^\d+$' -and [int]$arg -ge 1 -and [int]$arg -le $vips.Count) { $vip = $vips[[int]$arg - 1] }
+    else { $vip = $vips | Where-Object { $_.Nome -ieq $arg.Trim() } | Select-Object -First 1 }
+    if (-not $vip) { Err "VIP nao encontrado: $arg  (digite ligar para ver a lista)"; return }
+    $pauta = Cut (Ask 'Pauta da reuniao (Enter pula)') 200
+    if (-not (Unlock-Creator)) { return }
+
+    $topic = Get-RingTopic $vip.Id
+    $eph = [Security.Cryptography.ECDiffieHellmanCng]::new(256)
+    $c = New-RandomHex 4; $t = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); $x = Get-EphemeralXY $eph
+    $ring = [ordered]@{ k = 'ring'; c = $c; v = $vip.Id; t = $t; x = $x; cs = (Sign-Text "ring|$c|$($vip.Id)|$t|$x") }
+    if (-not (Send-Ring $topic $ring)) { Err 'Nao consegui chamar. Tem internet?'; return }
+
+    Write-Host ''
+    Cursor $false
+    $row = [Console]::CursorTop
+    $end = (Get-Date).AddSeconds(60); $answer = $null; $nextPoll = Get-Date; $f = 0
+    while ((Get-Date) -lt $end -and -not $answer) {
+        [Console]::SetCursorPosition(0, $row)
+        Write-Host ("  (( CHAMANDO ))  ★ $($vip.Nome)" + ('.' * (($f % 3) + 1))).PadRight(44) -NoNewline -ForegroundColor $script:T.A
+        Write-Host '  Esc cancela' -NoNewline -ForegroundColor DarkGray
+        if ($f % 12 -eq 0) { Play-Ring }
+        if ([Console]::KeyAvailable -and [Console]::ReadKey($true).Key -eq 'Escape') {
+            [void](Send-Ring $topic @{ k = 'cancel'; c = $c }); Write-Host ''; Cursor $true; Bot 'Chamada cancelada.'; return
+        }
+        if ((Get-Date) -ge $nextPoll) {
+            $nextPoll = (Get-Date).AddSeconds(2)
+            $answer = Read-Ring $topic | Where-Object { $_.c -eq $c -and $_.k -in 'ok', 'no' } | Select-Object -Last 1
+        }
+        $f++; Start-Sleep -Milliseconds 200
+    }
+    Write-Host ''; Cursor $true
+    if (-not $answer) { [void](Send-Ring $topic @{ k = 'cancel'; c = $c }); Bot "$($vip.Nome) nao atendeu. Tente mais tarde."; return }
+    if ($answer.k -eq 'no') { Bot "$($vip.Nome) recusou a chamada agora."; return }
+    try { $km = $eph.DeriveKeyMaterial((Get-EcdhPublicKey ([Convert]::FromBase64String([string]$answer.x)))) }
+    catch { Err 'A resposta da chamada veio com defeito.'; return }
+
+    # sala nova e descartavel, so dos dois
+    $room = 'reuniao-' + (New-RandomHex 5); $pass = New-RandomHex 16
+    $data = Protect-Bytes ([Text.Encoding]::UTF8.GetBytes((@{ r = $room; p = $pass; pauta = $pauta } | ConvertTo-Json -Compress))) (New-ReportKeys $km)
+    if (-not (Send-Ring $topic ([ordered]@{ k = 'room'; c = $c; d = [Convert]::ToBase64String($data) }))) { Err 'Nao consegui abrir a sala. Tem internet?'; return }
+    Sfx ok
+    Bot "$($vip.Nome) atendeu! Abrindo a sala da reuniao..."
+    Open-ChatRoom $room $pass @{ Com = "★ $($vip.Nome)"; Code = (Get-CallCode $km); Pauta = $pauta; Host = $true; Started = (Get-Date) }
+}
+
+# VIP: escuta o proprio canal em segundo plano (a cada 4 s) e marca quando chega um toque
+function Start-RingWatch {
+    if ($script:RingSync -or -not $script:VipInfo -or $IsCreator) { return }
+    $script:RingSync = [hashtable]::Synchronized(@{ Ring = $null; Stop = $false })
+    $ps = [powershell]::Create()
+    [void]$ps.AddScript({
+        param($topic, $sync)
+        $seen = @{}
+        while (-not $sync.Stop) {
+            try {
+                $req = [Net.HttpWebRequest]::Create("https://ntfy.sh/$topic/json?poll=1&since=90s")
+                $req.Timeout = 6000; $req.ReadWriteTimeout = 6000
+                $resp = $req.GetResponse(); $txt = (New-Object IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8)).ReadToEnd(); $resp.Close()
+                $rings = @(); $gone = @{}
+                foreach ($l in $txt -split "`n") {
+                    if (-not $l.Trim()) { continue }
+                    try {
+                        $o = $l | ConvertFrom-Json; if ($o.event -ne 'message') { continue }
+                        $m = $o.message | ConvertFrom-Json
+                        if ($m.k -eq 'ring') { $rings += , @($m.c, $o.message) } elseif ($m.k -in 'cancel', 'ok', 'no', 'room') { $gone[[string]$m.c] = 1 }
+                    } catch {}
+                }
+                foreach ($r in $rings) { if (-not $gone[[string]$r[0]] -and -not $seen[[string]$r[0]]) { $seen[[string]$r[0]] = 1; $sync.Ring = $r[1] } }
+            } catch {}
+            Start-Sleep -Seconds 4
+        }
+    }).AddArgument((Get-RingTopic ([string]$script:VipInfo.id))).AddArgument($script:RingSync)
+    [void]$ps.BeginInvoke()
+}
+
+# VIP: tela de chamada ao receber um toque valido do criador
+function Answer-Call {
+    $raw = $script:RingSync.Ring; $script:RingSync.Ring = $null
+    try { $r = $raw | ConvertFrom-Json } catch { return }
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    if ([string]$r.v -ne [string]$script:VipInfo.id -or [math]::Abs($now - [long]$r.t) -gt 120) { return }
+    # toque falso (sem a assinatura do criador): ignora em silencio
+    if (-not (Test-CreatorSig "ring|$($r.c)|$($r.v)|$($r.t)|$($r.x)" ([string]$r.cs))) { return }
+    $topic = Get-RingTopic ([string]$script:VipInfo.id)
+
+    Write-Host ''
+    Box @('(( CHAMADA DO CRIADOR ♦ ))', 'Reuniao privada de negocios do AKENETIC', '', '[A] atender        [R] recusar')
+    Cursor $false
+    $end = (Get-Date).AddSeconds(55); $choice = $null; $f = 0; $nextPoll = Get-Date
+    while ((Get-Date) -lt $end -and -not $choice) {
+        if ($f % 12 -eq 0) { Play-Ring }
+        if ([Console]::KeyAvailable) {
+            $k = [Console]::ReadKey($true)
+            if ($k.Key -eq 'A') { $choice = 'ok' } elseif ($k.Key -eq 'R' -or $k.Key -eq 'Escape') { $choice = 'no' }
+        }
+        if (-not $choice -and (Get-Date) -ge $nextPoll) {
+            $nextPoll = (Get-Date).AddSeconds(3)
+            if (Read-Ring $topic | Where-Object { $_.k -eq 'cancel' -and $_.c -eq $r.c }) { $choice = 'cancel' }
+        }
+        $f++; Start-Sleep -Milliseconds 200
+    }
+    Cursor $true
+    if (-not $choice -or $choice -eq 'cancel') { Bot 'Chamada perdida do criador.'; return }
+    if ($choice -eq 'no') { [void](Send-Ring $topic @{ k = 'no'; c = $r.c }); Bot 'Chamada recusada.'; return }
+
+    $eph = [Security.Cryptography.ECDiffieHellmanCng]::new(256)
+    try { $km = $eph.DeriveKeyMaterial((Get-EcdhPublicKey ([Convert]::FromBase64String([string]$r.x)))) } catch { Err 'A chamada veio com defeito.'; return }
+    $me = 'VIP'; if ($script:Account) { $me = [string]$script:Account.nome }
+    if (-not (Send-Ring $topic ([ordered]@{ k = 'ok'; c = $r.c; x = (Get-EphemeralXY $eph); n = $me }))) { Err 'Nao consegui atender. Tem internet?'; return }
+    Spin 'Conectando a reuniao...' 300
+    $info = $null; $end = (Get-Date).AddSeconds(30)
+    while (-not $info -and (Get-Date) -lt $end) {
+        $m = Read-Ring $topic | Where-Object { $_.k -eq 'room' -and $_.c -eq $r.c } | Select-Object -Last 1
+        if ($m) {
+            $plain = Unprotect-Bytes ([Convert]::FromBase64String([string]$m.d)) (New-ReportKeys $km)
+            if ($null -ne $plain) { $info = [Text.Encoding]::UTF8.GetString($plain) | ConvertFrom-Json }
+        }
+        if (-not $info) { Start-Sleep -Milliseconds 1500 }
+    }
+    if (-not $info) { Err 'O criador nao abriu a sala a tempo.'; return }
+    Sfx ok
+    Open-ChatRoom ([string]$info.r) ([string]$info.p) @{ Com = '♦ o criador'; Code = (Get-CallCode $km); Pauta = [string]$info.pauta; Host = $false; Started = (Get-Date) }
+}
+
+# ao sair da reuniao: a conversa vira uma ata legivel em \Reunioes (a sala nao e usada de novo)
+function Export-MeetingAta($m) {
+    try {
+        if (-not (Test-Path -LiteralPath $MeetingsDir)) { New-Item -ItemType Directory $MeetingsDir | Out-Null }
+        $who = ($m.Com -replace '[^\w ]', '').Trim(); if (-not $who) { $who = 'reuniao' }
+        $file = Join-Path $MeetingsDir ('{0} - {1}.txt' -f $m.Started.ToString('yyyy-MM-dd HH''h''mm'), $who)
+        $lines = @('REUNIAO AKENETIC', "com: $($m.Com)", "inicio: $($m.Started.ToString('dd/MM/yyyy HH:mm'))  ·  fim: $(Get-Date -Format 'HH:mm')",
+                   "pauta: $(if ($m.Pauta) { $m.Pauta } else { '(sem pauta)' })", "codigo de seguranca: $($m.Code)", '', '── CONVERSA ──')
+        if ($script:ChatLogFile -and (Test-Path -LiteralPath $script:ChatLogFile)) {
+            foreach ($l in Get-Content -LiteralPath $script:ChatLogFile) { $t = Unprotect-Msg (($l -split "`t", 2)[1]); if ($t) { $lines += $t } }
+            Remove-Item -LiteralPath $script:ChatLogFile -Force -ErrorAction SilentlyContinue
+        }
+        Set-Content -LiteralPath $file -Value $lines -Encoding UTF8
+        Write-ChatNotice "ata da reuniao salva em $file" 'Green'
+    } catch {}
+}
+
 # ----------------------------------------------------------------- CACA ONI (anti-adulteracao)
 # Toda versao publicada pelo criador sai assinada: terminal.sig guarda o SHA-256 do terminal.ps1
 # assinado com a chave do criador (a mesma do selo ♦). Sem essa chave ninguem gera uma assinatura
@@ -4555,7 +4863,9 @@ if ($IsCreator) {
     # visual do criador: terminal em tela cheia, transparente, com a mascara e a chuva matrix
     # rodando atras em loop. A abertura e a propria mascara surgindo no fundo.
     Enable-OniFont
+    Enable-OniSfx
     Set-FullScreen
+    # o fundo liga junto a trilha (pasta D:\Trilha) em loop, escondida em segundo plano
     [void](Start-OniFundo)
     # titulo em katakana precisa dos pontinhos (Cascadia) e de espaco na faixa central
     $script:UseJpTitle = [object]::ReferenceEquals($script:OniLines, $OniBraille) -and [Console]::WindowWidth -ge (($JpTitle | Measure-Object -Property Length -Maximum).Maximum + 2)
@@ -4630,6 +4940,8 @@ Check-VipRevoked
 Check-OpRevoked
 if ($IsCreator) { Sync-Reports; Show-Central -Compact }
 if ($script:IsNewAccount) { Show-Tutorial }
+# VIP: fica de ouvido no proprio canal para receber ligacoes do criador
+Start-RingWatch
 Cursor $true
 
 # ----------------------------------------------------------------- loop principal
@@ -4639,6 +4951,7 @@ while ($true) {
     $line = Read-PromptLine
     [Console]::ForegroundColor = 'Gray'
     if ($null -eq $line) { break }
+    if ($line -eq "$([char]1)ring") { Answer-Call; continue }
     $line = $line.Trim()
     if (-not $line) { continue }
     $script:History.Add($line)
@@ -4674,6 +4987,8 @@ while ($true) {
         '^tutorial$'            { Show-Tutorial; break }
         '^relatorio$'           { Send-Report $arg; break }
         '^relatorios$'          { if ($IsCreator) { Show-Reports $arg } else { Err 'So o criador le os relatorios.' }; break }
+        '^(ligar|chamar)$'      { if ($IsCreator) { Call-Vip $arg } else { Err 'So o criador faz ligacoes. Os VIPs recebem: o AKENETIC toca sozinho.' }; break }
+        '^(reunioes|reuniões)$' { if (Test-Path -LiteralPath $MeetingsDir) { Start-Process explorer.exe $MeetingsDir; Bot "Atas das reunioes: $MeetingsDir" } else { Bot 'Nenhuma reuniao ainda.' }; break }
         '^pendrive$'            { Show-Pendrive; break }
         '^(ls|dir)$'            { if ($arg) { Run-Cmd $line } else { Show-Files }; break }
         '^cd$' {
@@ -4721,6 +5036,7 @@ while ($true) {
             if ($arg -eq 'off') { $script:SoundOn = $false; Bot 'Sons desligados.' }
             elseif ($arg -eq 'on') { $script:SoundOn = $true; Bot 'Sons ligados!'; Sfx ok }
             else { Bot "Som esta $(if ($script:SoundOn) {'ligado'} else {'desligado'}). Use: som on | som off" }
+            Update-OniMusic
             Save-Config; break
         }
         '^(historico|history)$' {

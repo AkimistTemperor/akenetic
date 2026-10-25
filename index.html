@@ -111,6 +111,20 @@
   @keyframes avisoPisca { to { border-color: #c19c00; } }
   #matrix { position: fixed; inset: 0; display: none; z-index: 10; background: #000; }
   #matrixHint { position: fixed; bottom: 24px; left: 0; right: 0; text-align: center; color: #555; z-index: 11; display: none; }
+  /* ligacao do criador para o VIP */
+  #call { position: fixed; inset: 0; z-index: 20; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+    padding: 24px; text-align: center; background: radial-gradient(circle at 50% 35%, #3a0006, #0c0c0c 70%); }
+  #call.on { display: flex; }
+  #call .ico { width: 110px; height: 110px; border-radius: 50%; border: 3px solid #e74856; display: flex; align-items: center; justify-content: center;
+    font-size: 48px; color: #f2f2f2; animation: callPulse 1.2s ease-out infinite; }
+  #call .t { color: #f9f1a5; letter-spacing: .18em; font-weight: 700; }
+  #call .n { color: #f2f2f2; font-size: 22px; }
+  #call .d { color: #cccccc; font-size: 13px; max-width: 320px; }
+  #call .btns { display: flex; gap: 40px; margin-top: 18px; }
+  #call button { width: 72px; height: 72px; border-radius: 50%; border: none; font-size: 30px; color: #fff; cursor: pointer; }
+  #call .yes { background: #16c60c; } #call .no { background: #c50f1f; }
+  #call .lbl { display: flex; gap: 40px; color: #767676; font-size: 12px; } #call .lbl span { width: 72px; }
+  @keyframes callPulse { 0% { box-shadow: 0 0 0 0 rgba(231,72,86,.7); } 100% { box-shadow: 0 0 0 28px rgba(231,72,86,0); } }
 </style>
 </head>
 <body>
@@ -127,6 +141,10 @@
 <div id="boot"><div id="bootBanner"></div><div id="login"></div><a class="about" href="sobre/">o que é o AKENETIC? · termos · privacidade</a></div>
 <canvas id="matrix"></canvas>
 <div id="matrixHint">toque para sair</div>
+<div id="call"><div class="ico">☎</div><div class="t">CHAMADA DO CRIADOR ♦</div><div class="n">Reunião privada</div>
+  <div class="d" id="callMsg">negócios do AKENETIC · só vocês dois terão a chave da sala</div>
+  <div class="btns"><button class="no" id="callNo" aria-label="Recusar">✕</button><button class="yes" id="callYes" aria-label="Atender">✆</button></div>
+  <div class="lbl"><span>recusar</span><span>atender</span></div></div>
 
 <script>
 'use strict';
@@ -518,6 +536,7 @@ async function runCommand(line) {
       if (!info) return err('Convite inválido ou cancelado pelo criador.');
       if (account && String(info.n).toLowerCase() !== account.nome.toLowerCase()) bot(`Atenção: o convite é para "${info.n}", mas sua conta é "${account.nome}". O selo só aparece com o nome do convite.`);
       store.set('vip', arg.trim()); myVip = { ...info, token: arg.trim() }; THEMES.neon = NEON_THEME;
+      startRingWatch();
       const b = el('div', 'aviso');
       b.appendChild(el('span', 't', `★ BEM-VINDO, VIP ${info.n}!`));
       b.appendChild(seg(`Liberado: tema neon (digite: tema neon). No chat: /cor rosa, /brilho texto, /confete. Seu nome aparece com ★ (use o apelido "${info.n}"). Seu cartão: vip cartao`, 'White'));
@@ -1071,17 +1090,23 @@ function startListening() {
   })();
 }
 
-async function openChat() {
+// meeting: reuniao da ligacao do criador (sala e senha ja combinadas, sem perguntas)
+async function openChat(meeting) {
   if (!window.crypto || !crypto.subtle) return err('Este navegador não deixa usar criptografia aqui. Abra o AKENETIC por um link https://');
-  const b = box(['CHAT AKENETIC · chat, arquivos e RPG', 'Use o MESMO código de sala e a MESMA senha do seu amigo (funciona com o AKENETIC do PC).']);
-  b.firstChild.style.color = col(T.P);
-  const name = account ? account.nome : cut(await ask('Seu apelido', store.get('nome', '')), 16);
-  if (account) println(['Entrando como ', T.A], [name, 'White']);
-  const room = clean(await ask('Código da sala', store.get('sala', '')));
-  if (name.length < 2 || room.length < 4) return err('Apelido precisa de 2+ letras e o código da sala de 4+.');
-  const pass = await ask('Senha da sala', '', true);
-  if (pass.length < 4) return err('A senha precisa de pelo menos 4 caracteres.');
-  store.set('nome', name); store.set('sala', room);
+  let name, room, pass;
+  if (meeting) {
+    name = account ? account.nome : (myVip ? myVip.n : 'VIP'); room = meeting.room; pass = meeting.pass;
+  } else {
+    const b = box(['CHAT AKENETIC · chat, arquivos e RPG', 'Use o MESMO código de sala e a MESMA senha do seu amigo (funciona com o AKENETIC do PC).']);
+    b.firstChild.style.color = col(T.P);
+    name = account ? account.nome : cut(await ask('Seu apelido', store.get('nome', '')), 16);
+    if (account) println(['Entrando como ', T.A], [name, 'White']);
+    room = clean(await ask('Código da sala', store.get('sala', '')));
+    if (name.length < 2 || room.length < 4) return err('Apelido precisa de 2+ letras e o código da sala de 4+.');
+    pass = await ask('Senha da sala', '', true);
+    if (pass.length < 4) return err('A senha precisa de pelo menos 4 caracteres.');
+    store.set('nome', name); store.set('sala', room);
+  }
   await spin('Gerando chave secreta...', 400);
   chat = { name, room, K: await deriveKeys(room.toLowerCase(), pass), own: new Set(), seen: new Set(), people: new Set(), logIds: new Set(), typing: {}, lastTyping: 0, badges: {}, colors: {}, velha: null, velhaEl: null, ppt: {}, myPpt: {}, race: null, score: {},
            sheets: {}, inits: {}, mySheet: loadSheet(), master: '', blobs: {},
@@ -1094,6 +1119,11 @@ async function openChat() {
   }
   loadVipRevoked(); loadOpRevoked();
   chatHeader();
+  if (meeting) {
+    notice('☎ REUNIÃO com ♦ o criador · só vocês dois têm a chave desta sala', T.A);
+    notice(`código de segurança: ${meeting.code} (o mesmo deve aparecer na tela do criador)`, 'Yellow');
+    if (meeting.pauta) notice('PAUTA: ' + meeting.pauta, 'White');
+  }
   notice('conectando...', T.A);
   setMode('chat');
   startListening();
@@ -1572,6 +1602,98 @@ async function restoreVip() {
   myVip = { ...info, token: tok }; THEMES.neon = NEON_THEME;
   if (store.get('tema', '') === 'neon' && themeName !== 'neon') { themeName = 'neon'; T = THEMES.neon; applyTheme(); }
 }
+
+// ---------------- ligação do criador (VIP): toque assinado -> atender -> troca de chaves -> sala só dos dois
+// Mesmo protocolo do PC: ring (criador) -> ok/no (VIP) -> room (criador, cifrado com ECDH); cancel se desistir.
+// O canal é derivado do id do convite; um toque sem a assinatura do criador é ignorado.
+let ringWatch = null, call = null;
+async function ringTopic() { return 'akn-ring-' + await hexOf('akenetic-ring|' + myVip.id, 12); }
+async function postRing(obj) {
+  try { return (await fetch('https://ntfy.sh/' + await ringTopic(), { method: 'POST', body: JSON.stringify(obj) })).ok; } catch (e) { return false; }
+}
+// segredo ECDH -> SHA-256 -> chaves (igual aos relatórios) + código de segurança de 4 dígitos
+async function callKeys(z) {
+  const km = new Uint8Array(await crypto.subtle.digest('SHA-256', z));
+  const kd = async n => new Uint8Array(await crypto.subtle.digest('SHA-256', concat(km, new Uint8Array([n]))));
+  const h = await kd(3);
+  return { K: { encKey: await crypto.subtle.importKey('raw', await kd(1), { name: 'AES-CBC' }, false, ['encrypt', 'decrypt']),
+                macKey: await crypto.subtle.importKey('raw', await kd(2), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']) },
+           code: String(((h[0] << 8) | h[1]) % 10000).padStart(4, '0') };
+}
+function onRingMsg(m) {
+  if (!m || !m.c) return;
+  if (m.k === 'ring') { if (!ringWatch.seen.has(m.c)) { ringWatch.seen.add(m.c); incomingRing(m); } }
+  else if (m.k === 'cancel' && call && call.c === m.c && !call.answered) endCall('Chamada perdida do criador.');
+  else if (m.k === 'room' && call && call.c === m.c && call.answered && !call.joined) joinMeeting(m);
+}
+async function startRingWatch() {
+  if (ringWatch || !myVip || !window.EventSource) return;
+  const topic = await ringTopic();
+  ringWatch = { seen: new Set(), last: '90s' };
+  const feed = l => { try { const o = JSON.parse(l); if (o.event === 'message') { ringWatch.last = o.id; onRingMsg(JSON.parse(o.message)); } } catch (e) {} };
+  ringWatch.es = new EventSource(`https://ntfy.sh/${topic}/sse?since=90s`);
+  ringWatch.es.onmessage = e => feed(e.data);
+  // o celular pausa a conexão ao vivo em segundo plano: confere de novo ao voltar e a cada 20 s
+  const catchUp = async () => {
+    try { const txt = await (await fetch(`https://ntfy.sh/${topic}/json?poll=1&since=${ringWatch.last}`)).text(); for (const l of txt.split('\n')) if (l.trim()) feed(l); } catch (e) {}
+  };
+  setInterval(catchUp, 20000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) catchUp(); });
+}
+async function incomingRing(m) {
+  if (call || String(m.v) !== String(myVip.id) || Math.abs(Date.now() / 1000 - Number(m.t)) > 120) return;
+  if (!await verifyCreator(`ring|${m.c}|${m.v}|${m.t}|${m.x}`, m.cs)) return;
+  call = { c: m.c, x: m.x, answered: false, joined: false };
+  $('#callMsg').textContent = 'negócios do AKENETIC · só vocês dois terão a chave da sala';
+  $('#call').classList.add('on');
+  const ring = () => { if (call && !call.answered) { play([988, 90, 0, 40, 988, 90, 0, 40, 1319, 160]); buzz([400, 200, 400]); } };
+  ring(); call.timer = setInterval(ring, 2400);
+  call.timeout = setTimeout(() => { if (call && !call.answered) endCall('Chamada perdida do criador.'); }, 55000);
+}
+function endCall(msg) {
+  if (!call) return;
+  clearInterval(call.timer); clearTimeout(call.timeout); clearTimeout(call.roomTimeout);
+  $('#call').classList.remove('on'); call = null;
+  if (msg) bot(msg);
+}
+async function joinMeeting(m) {
+  call.joined = true;
+  const plain = await unprotectBytes(call.K, unb64(m.d));
+  if (!plain) return endCall('A sala da reunião veio com defeito.');
+  const info = JSON.parse(dec.decode(plain)), code = call.code;
+  endCall('');
+  sfx('ok');
+  if (chat) await leaveChat();
+  await openChat({ room: String(info.r), pass: String(info.p), pauta: info.pauta || '', code });
+}
+$('#callNo').onclick = async () => {
+  if (!call || call.answered) return;
+  const c = call.c; endCall('Chamada recusada.'); await postRing({ k: 'no', c });
+};
+$('#callYes').onclick = async () => {
+  if (!call || call.answered) return;
+  call.answered = true; clearInterval(call.timer); clearTimeout(call.timeout);
+  $('#callMsg').textContent = 'conectando à reunião...';
+  try {
+    const raw = new Uint8Array(65); raw[0] = 4; raw.set(unb64(call.x), 1);
+    const pub = await crypto.subtle.importKey('raw', raw, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+    const eph = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+    const z = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: pub }, eph.privateKey, 256));
+    Object.assign(call, await callKeys(z));
+    const mine = new Uint8Array(await crypto.subtle.exportKey('raw', eph.publicKey));
+    if (!await postRing({ k: 'ok', c: call.c, x: b64(mine.slice(1)), n: account ? account.nome : myVip.n })) throw new Error('sem internet');
+  } catch (e) { return endCall('Não consegui atender: ' + e.message); }
+  call.roomTimeout = setTimeout(() => { if (call && !call.joined) endCall('O criador não abriu a sala a tempo.'); }, 30000);
+  // a sala chega pela escuta ao vivo; confere também direto, caso ela esteja pausada
+  const c = call.c, topic = await ringTopic();
+  for (let i = 0; i < 15 && call && call.c === c && !call.joined; i++) {
+    await sleep(2000);
+    try {
+      const txt = await (await fetch(`https://ntfy.sh/${topic}/json?poll=1&since=2m`)).text();
+      for (const l of txt.split('\n')) { if (!l.trim()) continue; const o = JSON.parse(l); if (o.event === 'message') onRingMsg(JSON.parse(o.message)); }
+    } catch (e) {}
+  }
+};
 // novidades.json e publicado pelo 'site publicar' do premium; mostra uma vez para quem tem essa versao
 async function checkNovidades() {
   try {
@@ -1774,6 +1896,7 @@ async function startApp() {
   busy = false;
   booted = true;
   await restoreVip();
+  startRingWatch();
   if (!await checkNovidades() && prevVersion && prevVersion !== APP_VERSION) bot(`Atualizado para a v${APP_VERSION}!`);
   checkAviso();
   if (isNewAccount) showTutorial();
