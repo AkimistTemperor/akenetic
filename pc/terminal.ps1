@@ -32,7 +32,7 @@ $script:History = New-Object System.Collections.Generic.List[string]
 # Chave publica ECDSA P-256 do dono (X||Y em base64). O 'criador criar' do premium gera o par,
 # grava a publica aqui e no app do celular; a privada fica cifrada em criador.key.
 # Com ela todos verificam o selo do criador no chat e os convites VIP, sem servidor.
-$CreatorPub = ''
+$CreatorPub = 'FHUwZCVfp/Atn/LK5QX0Mc+KfzGcHATPZVCRZgAN4n4umA8i1qa4gitwfu9lqdEMbvSZi02w0WmsGPe83zjz+w=='
 $script:CreatorVerifier = $null
 $script:VipRevoked = @()
 
@@ -2263,7 +2263,9 @@ function Creator([string]$arg) {
             try {
                 $params = New-Object Security.Cryptography.CngKeyCreationParameters
                 $params.ExportPolicy = [Security.Cryptography.CngExportPolicies]::AllowPlaintextExport
-                $key  = [Security.Cryptography.CngKey]::Create([Security.Cryptography.CngAlgorithm]::ECDsaP256, $null, $params)
+                # [NullString]::Value = chave temporaria (o $null do PowerShell vira "" e o Windows
+                # salvaria a chave no perfil com nome vazio); ela so existe cifrada no criador.key
+                $key  = [Security.Cryptography.CngKey]::Create([Security.Cryptography.CngAlgorithm]::ECDsaP256, [NullString]::Value, $params)
                 $priv = $key.Export([Security.Cryptography.CngKeyBlobFormat]::EccPrivateBlob)
                 $pub  = [Convert]::ToBase64String($key.Export([Security.Cryptography.CngKeyBlobFormat]::EccPublicBlob), 8, 64)
                 $salt = New-Object byte[] 16; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($salt)
