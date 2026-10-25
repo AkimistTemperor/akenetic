@@ -338,7 +338,8 @@ const HELP = [
   ['musica', 'toca uma musiquinha'], ['tema [nome]', 'verde azul roxo vermelho arcoiris'],
   ['som on|off', 'liga/desliga sons'], ['historico', 'comandos já digitados'], ['instalar', 'instala o app na tela inicial'],
   ['vip [convite]', 'resgata um convite VIP do criador'], ['conta', 'sua conta: exportar, trocar senha, sair'],
-  ['tutorial', 'guia rápido do AKENETIC'], ['relatorio [texto]', 'achou um bug? manda pro criador (cifrado)']
+  ['tutorial', 'guia rápido do AKENETIC'], ['relatorio [texto]', 'achou um bug? manda pro criador (cifrado)'],
+  ['ligacoes', 'VIP: o celular toca bloqueado quando o criador liga']
 ];
 const JOKES = [
   'Existem 10 tipos de pessoas: as que entendem binário e as que não entendem.',
@@ -526,6 +527,7 @@ async function runCommand(line) {
     case 'conta': return accountCommand(arg);
     case 'tutorial': return showTutorial();
     case 'relatorio': return sendReport(arg);
+    case 'ligacoes': case 'ligações': case 'chamadas': return setupCallNotices();
     case 'vip': {
       if (/^cart[aã]o$/i.test(arg)) return vipCard();
       if (!arg) return bot(myVip ? `Você é VIP: ${myVip.n} ★ (convite de ${myVip.d}). Use: tema neon  |  vip cartao` : 'Ganhou um convite VIP? Cole aqui: vip AKNVIP.xxxx');
@@ -1633,12 +1635,35 @@ async function startRingWatch() {
   const feed = l => { try { const o = JSON.parse(l); if (o.event === 'message') { ringWatch.last = o.id; onRingMsg(JSON.parse(o.message)); } } catch (e) {} };
   ringWatch.es = new EventSource(`https://ntfy.sh/${topic}/sse?since=90s`);
   ringWatch.es.onmessage = e => feed(e.data);
-  // o celular pausa a conexão ao vivo em segundo plano: confere de novo ao voltar e a cada 20 s
+  // o celular pausa a conexão ao vivo em segundo plano: confere de novo ao voltar e a cada 6 s
+  // (fora da tela o navegador congela o app; para tocar bloqueado existe o comando 'ligacoes')
   const catchUp = async () => {
+    if (document.hidden) return;
     try { const txt = await (await fetch(`https://ntfy.sh/${topic}/json?poll=1&since=${ringWatch.last}`)).text(); for (const l of txt.split('\n')) if (l.trim()) feed(l); } catch (e) {}
   };
-  setInterval(catchUp, 20000);
+  setInterval(catchUp, 6000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) catchUp(); });
+  // aberto pela notificação da chamada (?atender=...): limpa o link, a chamada chega pela escuta
+  if (/[?&]atender=/.test(location.search)) window.history.replaceState(null, '', location.pathname);   // 'history' aqui e o historico de comandos
+  if (!store.get('dicaLigacao', '')) {
+    store.set('dicaLigacao', '1');
+    setTimeout(() => bot('★ Dica VIP: o criador pode te ligar. Para o celular tocar mesmo bloqueado, digite: ligacoes'), 1500);
+  }
+}
+async function ringNoticeTopic() { return 'akn-chamada-' + await hexOf('akenetic-chamada|' + myVip.id, 12); }
+// comando 'ligacoes': liga as notificações de chamada pelo app ntfy (o celular toca bloqueado)
+async function setupCallNotices() {
+  if (!myVip) return err('Só VIPs recebem ligações do criador. Tem um convite? vip AKNVIP.xxxx');
+  const topic = await ringNoticeTopic();
+  box(['LIGAÇÕES DO CRIADOR', 'O navegador pausa o AKENETIC quando ele sai da tela. Para o celular tocar mesmo bloqueado:',
+       '1. instale o app gratuito "ntfy" (Play Store / App Store)', '2. toque no botão abaixo para assinar o seu canal de chamadas',
+       '3. no ntfy, deixe as notificações desse canal ligadas', 'Quando o criador ligar, toque na notificação e atenda aqui.']);
+  const row = el('div', 'ln');
+  const a = el('a', 'chip', '📞 assinar no ntfy'); a.href = `ntfy://ntfy.sh/${topic}`;
+  const w = el('a', 'chip', 'abrir no navegador'); w.href = `https://ntfy.sh/${topic}`; w.target = '_blank'; w.rel = 'noopener';
+  row.append(a, w); out.appendChild(row); scroll(true);
+  println(['seu canal: ', 'DarkGray'], [topic, T.A]);
+  println(['(no ntfy, se o botão não abrir: + > nome do tópico > cole o canal acima)', 'DarkGray']);
 }
 async function incomingRing(m) {
   if (call || String(m.v) !== String(myVip.id) || Math.abs(Date.now() / 1000 - Number(m.t)) > 120) return;

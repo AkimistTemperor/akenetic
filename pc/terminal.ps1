@@ -4476,6 +4476,17 @@ $script:RingSync = $null
 
 function Get-RingTopic([string]$vipId) { 'akn-ring-' + (Get-Hex "akenetic-ring|$vipId" 12) }
 
+# O celular pausa o app fora da tela. Por isso o toque tambem vai como notificacao urgente para
+# o app ntfy do VIP (se ele assinou o canal com o comando 'ligacoes' do app): o celular toca
+# mesmo bloqueado e o toque na notificacao abre o AKENETIC ja na chamada.
+function Get-RingNoticeTopic([string]$vipId) { 'akn-chamada-' + (Get-Hex "akenetic-chamada|$vipId" 12) }
+function Send-RingNotice([string]$vipId, [string]$c) {
+    try {
+        $h = @{ Title = 'AKENETIC - chamada do criador'; Priority = '5'; Tags = 'telephone_receiver'; Click = "$($SiteBase)?atender=$c" }
+        Invoke-RestMethod -Method Post -Uri "https://ntfy.sh/$(Get-RingNoticeTopic $vipId)" -Headers $h -Body 'O criador do AKENETIC esta te ligando agora. Toque aqui para atender.' -ContentType 'text/plain' -TimeoutSec 8 | Out-Null
+    } catch {}
+}
+
 function Send-Ring([string]$topic, $obj) {
     try { Invoke-RestMethod -Method Post -Uri "https://ntfy.sh/$topic" -Body ($obj | ConvertTo-Json -Compress) -ContentType 'text/plain' -TimeoutSec 10 | Out-Null; $true } catch { $false }
 }
@@ -4542,11 +4553,13 @@ function Call-Vip([string]$arg) {
     $c = New-RandomHex 4; $t = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds(); $x = Get-EphemeralXY $eph
     $ring = [ordered]@{ k = 'ring'; c = $c; v = $vip.Id; t = $t; x = $x; cs = (Sign-Text "ring|$c|$($vip.Id)|$t|$x") }
     if (-not (Send-Ring $topic $ring)) { Err 'Nao consegui chamar. Tem internet?'; return }
+    Send-RingNotice $vip.Id $c
 
     Write-Host ''
     Cursor $false
     $row = [Console]::CursorTop
-    $end = (Get-Date).AddSeconds(60); $answer = $null; $nextPoll = Get-Date; $f = 0
+    # 90 s: da tempo de o VIP desbloquear o celular e abrir pela notificacao
+    $end = (Get-Date).AddSeconds(90); $answer = $null; $nextPoll = Get-Date; $f = 0
     while ((Get-Date) -lt $end -and -not $answer) {
         [Console]::SetCursorPosition(0, $row)
         Write-Host ("  (( CHAMANDO ))  ★ $($vip.Nome)" + ('.' * (($f % 3) + 1))).PadRight(44) -NoNewline -ForegroundColor $script:T.A
