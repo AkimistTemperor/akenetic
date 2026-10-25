@@ -18,9 +18,12 @@ $Root       = $PSScriptRoot
 $Drive      = Split-Path -Qualifier $Root
 $NotesFile  = Join-Path $Root 'notas.txt'
 $ConfigFile = Join-Path $Root 'config.txt'
-# a edicao premium e liberada pelo arquivo premium.key, que o 'compartilhar' nunca copia
-$IsPremium  = Test-Path -LiteralPath (Join-Path $Root 'premium.key')
-$Version    = '2.4'
+# cargos: CRIADOR = pendrive do dono (premium.key + criador.key; os poderes ainda pedem a senha
+# mestra); OPERADOR = licenca assinada pelo criador (operador.key, verificada mais abaixo).
+$HasOwnerKey = Test-Path -LiteralPath (Join-Path $Root 'premium.key')
+$IsCreator   = $HasOwnerKey -and (Test-Path -LiteralPath (Join-Path $Root 'criador.key'))
+$IsPremium   = $IsCreator
+$Version     = '2.5'
 # de onde o comando 'atualizar' baixa a versao nova (publicada pelo 'site publicar' do premium)
 $SiteBase   = 'https://akimisttemperor.github.io/akenetic/'
 $UpdateBase = "$($SiteBase)pc/"
@@ -66,13 +69,35 @@ function Test-VipToken([string]$token) {
 
 $VipFile = Join-Path $Root 'vip.key'
 $script:VipToken = $null; $script:VipInfo = $null
-if (-not $IsPremium -and (Test-Path -LiteralPath $VipFile)) {
+if (-not $IsCreator -and (Test-Path -LiteralPath $VipFile)) {
     $tok = (Get-Content -LiteralPath $VipFile -Raw).Trim()
     $script:VipInfo = Test-VipToken $tok
     if ($script:VipInfo) { $script:VipToken = $tok }
 }
 $IsVip = [bool]$script:VipInfo
-$GoldName = 'PRO'; if (-not $IsPremium) { $GoldName = 'VIP' }
+
+# licenca de operador: "AKNOP.<json base64 com nome, id, data e chave publica do operador>.<assinatura do criador>"
+$script:OpRevoked = @()
+function Test-OperatorLicense([string]$lic) {
+    if ("$lic".Trim() -notmatch '^AKNOP\.([A-Za-z0-9+/=]+)\.([A-Za-z0-9+/=]+)$') { return $null }
+    $body = $Matches[1]; $sig = $Matches[2]
+    if (-not (Test-CreatorSig $body $sig)) { return $null }
+    try { $j = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($body)) | ConvertFrom-Json } catch { return $null }
+    if (-not $j.n -or -not $j.id -or "$($j.k)".Length -lt 80 -or ($script:OpRevoked -contains [string]$j.id)) { return $null }
+    $j
+}
+$OperatorFile = Join-Path $Root 'operador.key'
+$script:OpInfo = $null; $script:OpLicense = $null
+if (-not $IsCreator -and (Test-Path -LiteralPath $OperatorFile)) {
+    try {
+        $kit = Get-Content -LiteralPath $OperatorFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $script:OpInfo = Test-OperatorLicense $kit.lic
+        if ($script:OpInfo) { $script:OpLicense = [string]$kit.lic }
+    } catch {}
+}
+$IsOperator = [bool]$script:OpInfo
+$IsPremium  = $IsCreator -or $IsOperator
+$GoldName = 'VIP'; if ($IsCreator) { $GoldName = 'PRO' } elseif ($IsOperator) { $GoldName = 'OP' }
 
 # ----------------------------------------------------------------- temas
 $Themes = @{
@@ -85,7 +110,11 @@ $Themes = @{
 $GoldTheme = @{ P='Yellow'; S='DarkYellow'; A='White'; T='Gray'; G=@('White','Yellow','Yellow','DarkYellow','DarkYellow','DarkRed') }
 # ouro = so o criador; neon = VIP (o criador tambem pode usar)
 $NeonTheme = @{ P='Magenta'; S='DarkMagenta'; A='Cyan'; T='Gray'; G=@('Cyan','Magenta','Cyan','Magenta','DarkCyan','DarkMagenta') }
-if ($IsPremium) { $Themes.ouro = $GoldTheme }
+# oni = tema exclusivo do criador (mascara, chamas, brasas, taiko); prata = operadores
+$OniTheme   = @{ P='Red'; S='DarkRed'; A='Yellow'; T='Gray'; G=@('White','Yellow','Red','Red','DarkRed','DarkRed') }
+$PrataTheme = @{ P='White'; S='DarkGray'; A='Cyan'; T='Gray'; G=@('White','White','Gray','Gray','DarkGray','DarkCyan') }
+if ($IsCreator) { $Themes.ouro = $GoldTheme; $Themes.oni = $OniTheme }
+if ($IsPremium) { $Themes.prata = $PrataTheme }
 if ($IsPremium -or $IsVip) { $Themes.neon = $NeonTheme }
 $script:ThemeName = 'verde'
 $script:ChatName  = $env:USERNAME
@@ -95,6 +124,7 @@ $script:NovSeen   = ''
 $script:MyColor   = ''
 $script:Particles = $true
 $proConfigured    = $false
+$oniConfigured    = $false
 if (Test-Path $ConfigFile) {
     foreach ($l in Get-Content $ConfigFile -Encoding UTF8) {
         if ($l -match '^tema=(\w+)$' -and $Themes.ContainsKey($Matches[1])) { $script:ThemeName = $Matches[1] }
@@ -106,10 +136,12 @@ if (Test-Path $ConfigFile) {
         if ($l -match '^cor=(\w+)$') { $script:MyColor = $Matches[1] }
         if ($l -eq 'efeitos=off') { $script:Particles = $false }
         if ($l -eq 'pro=1') { $proConfigured = $true }
+        if ($l -eq 'oni=1') { $oniConfigured = $true }
     }
 }
-# na primeira vez como premium o tema vira ouro (depois o 'tema' troca normalmente)
-if ($IsPremium -and -not $proConfigured) { $script:ThemeName = 'ouro' }
+# primeira vez de cada cargo: criador ganha o tema oni, operador o prata (depois 'tema' troca)
+if ($IsCreator -and -not $oniConfigured) { $script:ThemeName = 'oni' }
+elseif ($IsOperator -and -not $proConfigured) { $script:ThemeName = 'prata' }
 $script:T = $Themes[$script:ThemeName]
 
 function Save-Config {
@@ -122,12 +154,15 @@ function Save-Config {
       "cor=$script:MyColor",
       "efeitos=$(if ($script:Particles) {'on'} else {'off'})")
     if ($IsPremium) { $lines += 'pro=1' }
+    if ($IsCreator) { $lines += 'oni=1' }
     $lines | Set-Content $ConfigFile -Encoding UTF8
 }
-if ($IsPremium -and -not $proConfigured) { Save-Config }
+if (($IsCreator -and -not $oniConfigured) -or ($IsOperator -and -not $proConfigured)) { Save-Config }
 
-# modo ouro: premium + tema ouro troca animacoes, sons, prompt e o matrix
-function Test-GoldMode { $IsPremium -and $script:ThemeName -eq 'ouro' }
+# modo ouro: criador + tema ouro troca animacoes, sons, prompt e o matrix
+function Test-GoldMode { $IsCreator -and $script:ThemeName -eq 'ouro' }
+# modo oni: criador + tema oni -> mascara, nome em chamas, brasas e tambores
+function Test-OniMode { $IsCreator -and $script:ThemeName -eq 'oni' }
 # modo neon: VIP (ou criador) + tema neon -> letreiro que acende, sons eletricos, chuva neon
 function Test-NeonMode { ($IsPremium -or $script:IsVip) -and $script:ThemeName -eq 'neon' }
 
@@ -141,6 +176,15 @@ function Play([int[]]$notes) {
 }
 
 function Sfx([string]$name) {
+    if (Test-OniMode) {
+        switch ($name) {
+            'enter' { Play 196,15; return }
+            'tick'  { Play 1319,8; return }
+            'ok'    { Play 110,50,165,90; return }                                                    # taiko: don-don
+            'boot'  { Play 330,120,349,120,440,120,494,120,523,240,494,120,440,360; return }          # escala japonesa
+            'bye'   { Play 523,120,494,120,440,120,349,120,330,360,82,200; return }
+        }
+    }
     if (Test-NeonMode) {
         switch ($name) {
             'enter' { Play 1600,12; return }
@@ -217,7 +261,11 @@ function Show-Bar([string]$label, [int]$ms = 600, [int]$width = 30) {
     for ($i = 0; $i -le $width; $i++) {
         Write-Host "`r  $($label.PadRight(28))" -NoNewline -ForegroundColor $script:T.T
         Write-Host '[' -NoNewline -ForegroundColor $script:T.S
-        if ((Test-NeonMode) -and $i -gt 0) {
+        if ((Test-OniMode) -and $i -gt 0 -and $i -lt $width) {
+            # barra oni: brasa vermelha com a ponta em chamas
+            Write-Host ('█' * ($i - 1)) -NoNewline -ForegroundColor Red
+            Write-Host '▓' -NoNewline -ForegroundColor Yellow
+        } elseif ((Test-NeonMode) -and $i -gt 0) {
             # barra neon: ciano e rosa alternando
             for ($q = 0; $q -lt $i; $q++) { Write-Host '█' -NoNewline -ForegroundColor @('Cyan', 'Magenta')[$q % 2] }
         } elseif ((Test-GoldMode) -and $i -gt 0 -and $i -lt $width) {
@@ -385,7 +433,388 @@ function Show-NeonBanner($colors) {
     Cursor $true
 }
 
+# ----------------------------------------------------------------- mascara ONI (pendrive do criador)
+# A mascara do criador em pontinhos (braille, 58x40). Abre o AKENETIC e depois fica num canto da
+# tela, com a chuva matrix em loop, enquanto o terminal e usado (janela separada: oni-matrix.ps1).
+$OniBraille = @'
+   ⢀⡄                                              ⣤
+  ⣰⠋⡇                                              ⣟⠳⡄
+⢀⡾⠁ ⡇                                              ⡿ ⠙⣆
+⢸   ⢧                                             ⢸   ⠃⡄
+⢸ ⢠ ⠸⡄                                           ⢀⡇ ⡀⠄⢰⠁
+⢸ ⠈⣆ ⢳⡀                                          ⢠⠇ ⡜ ⢸
+⠸⡄ ⠸⡄ ⢳⡀                                        ⣠⠏ ⡸⠁ ⣸
+ ⢻⡄ ⢱⡀ ⠹⣄             ⢀⣀⣀⣀⣠⣤⣤⣤⣤⣤⣀⣀⣀⣀             ⡴⠋ ⢠⠃ ⣰⠇
+  ⢻⡄ ⢧ ⡀⠘⢦⡀       ⡀⣠⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣦⣄         ⡄⡞⠁⢠⢀⠏ ⣴⠏
+   ⢻⣆⠘⣆⢣  ⠳⣄   ⢀⣤⣾⣿⣿⣿⣿⣿⠟⢛⡛⠛⠛⠛⢛⣛⡛⠛⠛⠛⢻⣿⣿⣿⣿⣿⣶⣄      ⡴⠋ ⢠⠇⡼ ⣼⠋
+    ⢹⣦⢹⡄⣇ ⡀⠈⠳⣤⣶⣿⣿⣿⣿⡿⠻⣧⡙⢷⡌         ⠁⣰⡟⣡⡿⠛⢿⣿⣿⣿⣿⣦⣤⠞⠁⢀ ⡎⣰⢃⣾⠃
+     ⢻⣷⣷⠸⡄⢱⡀  ⠉⢹⣿⣿⠃⠖ ⠈⣿⡜⡇         ⠙⣿⠏   ⠹⣿⣿⠋⠁  ⢠⠃⣸⢱⣧⣾⠏
+      ⢻⣿⣧⢳⡀⢳⡀  ⢸⣿⠃⡂   ⠈⠁           ⠉  ⣀⡀⠹⣿    ⢠⠃⢠⢇⣿⣿⠏
+      ⠁⢿⣿⣾⣇ ⢷⡀ ⣾⢃⣼⠏                   ⠁⢻⣆⢻⣇ ⣠⡏⢀⣾⣾⣿⠏
+       ⠁⣿⣿⣿⡆⠈⢷⣼⣿⡿⠃                      ⠻⣿⣿⣴⡟ ⣼⣿⣿⡏
+      ⣼⡿⠛⢿⣿⣿⡀⣼⠏⣿⠃⠄                       ⢹⣯⢻⣄⢰⣿⣿⡿⢻⣿⡆
+     ⡆⣿⢿⡄ ⢻⣿⡟⢡⠸⣿                         ⢸⣿ ⠙⣻⣿⠏ ⣰⣟⣿
+     ⡇⣿⣼⣷⡀ ⢿⣷⠘ ⢿⡇                        ⣾⡇⠰⢠⣿⡇⠂⣰⣿⣼⣿
+      ⢿⣻⣿⡇⢰⣿⡏⠠ ⣼⣷                        ⣿⡀⢠⠘⢿⣧⡀⢿⣿⣻⡇
+      ⡇⣿⠟ ⣿⣿ ⣠⣴⡿⠏               ⠄        ⠻⣷⣤⣀⢸⣿⡇⠚⢿⣿⠁
+      ⡇⣿⠘⠢⠘⣿⣿⡟⠡⠄        ⡀⣼⡇ ⠐   ⢿⣄⠁      ⠐ ⠈⠃⣿⣿⡿⢁ ⣸⣿⡄
+      ⠇⣿⣿⣦⡀⠈⢿⣿⣦⣀⠁  ⣀⣀⣀⣠⣴⣿⣟       ⠈⣿⣷⣤⣀⣀⣀⣀  ⢀⣠⣾⣿⣟⢡⣿⣾⣿⣿⠁
+       ⢹⡇⠹⣷⡔⠸⣧⠉⠛⠛⠛⠛⠉⠉⠉⠙⠻⣿⣿⡆⡄     ⣾⣿⡿⠛⠉⠉⠉⠉⠛⠛⠛⠋⢁⡿⠘⣼⡿⢁⣿⠃
+       ⡇⡇⢰⣿⣇⢠⠙⣦⡀       ⡀⣼⣿⡇     ⣿⡿⣆       ⣠⡾⣡⢦⣿⣧⡜⣿
+      ⢀⡇⡇⢸⣿⣿⠘⠃⠈⠙⠿⠶⣶⣤⣤⣴⣶⣿⣥⣿⠇      ⢿⣧⣬⣷⣶⣤⣤⣴⡶⠶⠟⠉  ⢸⣿⣿ ⣿⡇
+       ⢻⣷⣼⣿⢿⣧⡀ ⡀ ⡀ ⣀⣤⣀⡀⣌⠻⣷⡐     ⣠⡟⠉ ⢀⣀⣄⡀     ⣠⣾⡿⣿⣤⣿⠇
+        ⠉⣿⡇⡌⠻⣿⣦⣈⣉⣴⣾⣿⣯⣿⣿⠈⠂⠈⠁      ⠉  ⢰⢿⣿⣿⣿⣦⣄⣀⣠⣾⣿⠏ ⣿⣏⠉
+        ⡇⣿ ⠁ ⠈⠛⢿⣿⣟⠁⣾⡏            ⢀  ⣈⣿⡇⠛⣿⣿⠟⠋⠵⠂ ⠸⣿⡄
+        ⢻⣿⡄⠇⢰⣆ ⠈⣷⢹⣦⠙⢿⣿⣿⣦⣀        ⢀⣠⣾⣿⣿⠿⢃⣾⢻⡟⠈⢀⣾⠃ ⣼⣿⡇
+        ⠃⢿⣿⣄ ⠹⣆ ⢸⣿⣿⣧ ⢀⣿⠻⣿⣷⣌    ⢀⣤⣿⡿⢻⣿ ⢠⣿⣿⣿⢁⢀⣾⢃⣠⣾⣿⡟⠁
+          ⠻⣿⣧⡀⢿⣧ ⢿⣿⣿⡆⣾⢻⡆⣈⠻⣿⣷⣦⣤⣴⣿⡿⠋⡄⣼⢻⣄⣾⣿⣿⡏⢠⣿⠃⣰⣿⡿⠋
+           ⠈⢻⣿⣆⣿⣧⠸⣿⣿⣿⣿⠈⣷⡙⠳⠆⠉⠉⠉⠉⠁ ⠁⣠⡟ ⣿⣿⣿⡿⢠⣿⢁⣼⣿⠟
+            ⠙⢿⣿⣿⣷⣿⣿⣿⣿ ⢹⣿⡟⢶⡦⣤⣤⣤⣶⠾⣿⣻⠃⢀⣿⣿⣿⢧⣿⣷⣿⡿⠁
+             ⠈⠻⣿⣿⣿⠟⣋⣸⡀ ⢳⡉⠙⠓⠛⠓⠛⠚⠉⣩⠏ ⢸⣄⡙⢿⣾⣿⣿⠋
+               ⠙⣿⣿⡿⣿⣿⣧  ⢹⣀⣀⣀⣀⣀⣀⣰⠃ ⢠⣿⣿⣿⣿⣿⡿⠁
+                ⠹⣿⣧⢻⣿⠿⣷⣄⣼⣇⣠⣧⣇⣿⣀⣸⣄⣠⣿⢟⣿⢃⣿⣿⠁
+                 ⢿⣿⡄⠻⣷⣤⣬⣥⠿⠿⠿⠿⠿⠿⢯⣭⣤⣴⡿⠃⣸⣿⡏
+                 ⠃⣿⣷⡀⠤⡍⠁    ⠒  ⡀⡄⠉⣉ ⣰⣿⡿
+                  ⠁⢿⣿⣦⣤⣤⣤⣤⣴⣶⣷⣶⣤⣤⣤⣤⣴⣾⣿⠟⠁
+                    ⠁⠛⠛⠛⠋⠉⠁   ⠉⠉⠛⠛⠛⠋⠁
+'@ -split "`r?`n"
+
+# a mesma mascara em blocos, para PCs sem fonte com braille (Windows 10 sem Cascadia)
+$OniBlocos = @'
+    ▄                                              ▄
+  ▄▀█                                              █▀▄
+ █  █                                              █ ▀▄
+█   █                                             █   ▀▄
+█ ▄ ▀▄                                            █   ▄
+█  ▄ █                                           ▄▀ █ █
+▀▄ ▀▄ █                                         ▄▀ █  █
+ █▄ █  ▀▄              ▄▄▄▄▄▄▄▄▄▄▄▄▄             ▄▀ ▄▀ ▄▀
+  █▄ █  ▀▄         ▄██████████████████▄▄         ▄█ ▄ ▀ ▄▀
+   █▄▀▄█  ▀▄    ▄██████▀▀▀▀▀▀▀█▀▀▀▀███████▄      ▄▀ ▄▀█ █▀
+    █▄█▄█   ▀▄██████▀█▀█▄          ▄█▄█▀█████▄▄▀   █▄▀█▀
+     ███▀▄█   ▀███▀▀  ███         ▀█▀   ▀██▀   ▄▀████▀
+      ████ █   ██▀                 ▀  ▄ ▀█    ▄▀▄███▀
+       ████ █  █▀█▀                    █▄██ ▄█ ███▀
+        ███▄ ████▀                      ▀██▄█ ████
+      ██▀███ █▀█▀                        ███▄▄█████▄
+     ▄██▄ ███▄▀█                         ██ ▀██▀ ▄██
+     ████  ██▀ ██                        ██ ▄██ ▄███
+      ████▄██  ██                        █ ▄▀██ ████
+      ██▀ ██ ▄▄█▀                        ▀█▄▄███▀██
+      ██▀ ▀███           ██     █▄          ▀███  ██▄
+      ▀██▄  ██▄▄   ▄▄▄▄▄██        ██▄▄▄▄▄   ▄███▄████
+       ██▀█▄▀█▀▀▀▀▀▀▀▀▀▀██▄▄     ███▀▀▀▀▀▀▀▀▀ █▀██ █▀
+       ██▄██▄▀▄         ███     ██▄       ▄█▄▄████
+       █████▀▀ ▀███▄▄▄██▄█▀      ██▄██▄▄▄██▀▀  ███ ██
+       ██████      ▄▄▄ ▄▀█      ▄█▀  ▄▄      ▄███▄█▀
+        ▀██▄▀█▄▄█▄█████          ▀  ▄████▄▄▄▄██▀ ██▀
+        ██    ▀███ ██               ▄██▀██▀▀█  ▀█▄
+        ██▄▀▄▄  ██▄▀███▄▄         ▄████▀███  █▀ ███
+        ▀██▄ ▀▄ ████  █▀██▄     ▄████ ▄███  █▀▄███
+          ▀██ ██ ███▄██▄▄▀██▄▄▄██▀▄██▄████▄█▀▄██▀
+            ██▄██▀████ █▀▀ ▀▀▀▀   ▄█ ████▄█ ██▀
+            ▀████████ ████▄▄▄▄████▀ ████████
+              ▀███▀██  █▀▀▀▀▀▀▀▀█▀ █▄▀████▀
+               ▀██████  █▄▄▄▄▄▄▄▀ ▄██████
+                ▀██████▄██▄███▄█▄▄███▀██
+                 ██▄▀█▄▄▄████████▄▄█▀███
+                 ▀██ ▄█     ▀   ▄▀█ ▄██
+                   ██▄▄▄▄▄▄███▄▄▄▄▄██▀
+                     ▀▀▀▀▀    ▀▀▀▀▀▀
+'@ -split "`r?`n"
+
+$OniScript = @((Join-Path $Root 'oni-matrix.ps1'), (Join-Path $Drive 'Oni\oni-matrix.ps1')) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+$script:OniLines = $OniBlocos
+
+if ($IsCreator -and -not ('AknConsole' -as [type])) {
+    try {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class AknConsole {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct FontInfo {
+        public uint cbSize; public uint nFont; public short X; public short Y;
+        public uint FontFamily; public uint FontWeight;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string FaceName;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct BufferInfo {
+        public uint cbSize; public short SizeX, SizeY, CurX, CurY; public ushort Attr;
+        public short L, T, R, B, MaxX, MaxY; public ushort Popup; public int Fullscreen;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)] public uint[] Colors;
+    }
+    [StructLayout(LayoutKind.Sequential)] public struct Rect { public int L, T, R, B; }
+    [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();
+    [DllImport("kernel32.dll", SetLastError = true)] public static extern IntPtr GetStdHandle(int h);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetCurrentConsoleFontEx(IntPtr h, bool max, ref FontInfo f);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetCurrentConsoleFontEx(IntPtr h, bool max, ref FontInfo f);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetConsoleScreenBufferInfoEx(IntPtr h, ref BufferInfo b);
+    [DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint m);
+    [DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m);
+    [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int i);
+    [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr h, int i, int v);
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] static extern IntPtr SetWindowLongPtr64(IntPtr h, int i, IntPtr v);
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int hh, uint f);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out Rect r);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool ShowScrollBar(IntPtr h, int bar, bool show);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool SetLayeredWindowAttributes(IntPtr h, uint key, byte alpha, uint flags);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+    // "PseudoConsoleWindow" = este console esta dentro do Windows Terminal (ou outro terminal moderno)
+    public static string ConsoleClass() { var s = new StringBuilder(256); GetClassName(GetConsoleWindow(), s, 256); return s.ToString(); }
+    public static string Face() {
+        var f = new FontInfo(); f.cbSize = (uint)Marshal.SizeOf(f);
+        return GetCurrentConsoleFontEx(GetStdHandle(-11), false, ref f) ? f.FaceName : "";
+    }
+    public static short Height() {
+        var f = new FontInfo(); f.cbSize = (uint)Marshal.SizeOf(f);
+        return GetCurrentConsoleFontEx(GetStdHandle(-11), false, ref f) ? f.Y : (short)16;
+    }
+    public static short Width() {
+        var f = new FontInfo(); f.cbSize = (uint)Marshal.SizeOf(f);
+        return GetCurrentConsoleFontEx(GetStdHandle(-11), false, ref f) && f.X > 0 ? f.X : (short)8;
+    }
+    public static bool SetFont(string face, short height) { return SetFont(face, height, 400); }
+    public static bool SetFont(string face, short height, uint weight) {
+        var f = new FontInfo(); f.cbSize = (uint)Marshal.SizeOf(f);
+        f.FaceName = face; f.Y = height; f.X = 0; f.FontFamily = 54; f.FontWeight = weight;
+        return SetCurrentConsoleFontEx(GetStdHandle(-11), false, ref f);
+    }
+    // cor real do "preto" do console (no Windows 11 nao e 0,0,0): vira a cor transparente
+    public static uint BlackKey() {
+        var b = new BufferInfo(); b.cbSize = (uint)Marshal.SizeOf(b); b.Colors = new uint[16];
+        return GetConsoleScreenBufferInfoEx(GetStdHandle(-11), ref b) ? b.Colors[0] : 0;
+    }
+    // dono da janela: a janela "h" fica sempre logo acima de "owner"
+    public static void SetOwner(IntPtr h, IntPtr owner) {
+        if (IntPtr.Size == 8) SetWindowLongPtr64(h, -8, owner); else SetWindowLong(h, -8, owner.ToInt32());
+    }
+}
+'@
+    } catch {}
+}
+
+# o visual hacker do criador (fundo matrix atras do texto) so funciona no console classico (conhost).
+# No Windows 11 o .bat costuma abrir dentro do Windows Terminal, as vezes sem WT_SESSION: ai a
+# janela do console e uma "PseudoConsoleWindow" invisivel. Nesse caso reabre no conhost e fecha.
+if ($env:AKN_CONHOST) { $env:WT_SESSION = $null }
+$script:InWT = [bool]$env:WT_SESSION
+try { if ([AknConsole]::ConsoleClass() -eq 'PseudoConsoleWindow') { $script:InWT = $true } } catch {}
+if ($IsCreator -and $script:InWT -and -not $env:AKN_CONHOST) {
+    try {
+        $env:AKN_CONHOST = '1'
+        Start-Process conhost.exe -ArgumentList "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+        exit
+    } catch { $env:AKN_CONHOST = $null }
+}
+
+# pontinhos precisam de fonte com braille: o Windows Terminal ja tem; no console classico
+# troca para a Cascadia Mono (vem no Windows 11). Sem ela, a mascara sai em blocos.
+function Enable-OniFont {
+    if ($script:InWT) { $script:OniLines = $OniBraille; return }
+    try {
+        if ([AknConsole]::Face() -notlike 'Cascadia*' -and (Test-Path -LiteralPath "$env:WINDIR\Fonts\CascadiaMono.ttf")) {
+            [void][AknConsole]::SetFont('Cascadia Mono', [AknConsole]::Height())
+        }
+        if ([AknConsole]::Face() -like 'Cascadia*') { $script:OniLines = $OniBraille }
+    } catch {}
+}
+
+function Show-OniMask([switch]$Animated) {
+    $lines = $script:OniLines
+    $w = ($lines | Measure-Object -Property Length -Maximum).Maximum
+    $pad = Center-Pad $w
+    Cursor $false
+    # abre espaco (rolando se precisar) e desenha por cima
+    foreach ($l in $lines) { Write-Host '' }
+    $top = [Console]::CursorTop - $lines.Count
+    # surge de cima pra baixo em brasa, acende vermelho e assenta branco
+    $passes = @('White'); if ($Animated) { $passes = @('DarkRed', 'Red', 'White') }
+    foreach ($c in $passes) {
+        [Console]::ForegroundColor = $c
+        for ($r = 0; $r -lt $lines.Count; $r++) {
+            try { [Console]::SetCursorPosition($pad, $top + $r); [Console]::Write($lines[$r]) } catch {}
+            if ($Animated -and $c -eq 'DarkRed') { if ($r % 8 -eq 0) { Play 82,30 } else { Start-Sleep -Milliseconds 14 } }
+        }
+        if ($Animated -and $c -eq 'Red') { Play 110,60; Start-Sleep -Milliseconds 90 }
+    }
+    try { [Console]::SetCursorPosition(0, $top + $lines.Count) } catch {}
+    [Console]::ForegroundColor = 'Gray'
+    if ($Animated) { Play 82,120,110,160 }
+    Cursor $true
+}
+
+# ----------------------------------------------------------------- visual hacker (pendrive do criador)
+# Duas janelas: atras, o oni-matrix.ps1 -Fundo (chuva matrix + mascara em tela cheia, em loop);
+# na frente, este terminal numa faixa central com o fundo preto transparente, so o texto por cima.
+# A chuva cai so nas laterais: na faixa do texto fica apenas a mascara, apagada.
+# O terminal vira "dono" da janela de fundo, entao ela fica sempre logo atras dele.
+$script:OniFundo = $null
+$script:PanelCols = 0
+
+function Set-FullScreen {
+    if ($script:InWT) { return }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        $work = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+        $hwnd = [AknConsole]::GetConsoleWindow()
+        $style = [AknConsole]::GetWindowLong($hwnd, -16)
+        [void][AknConsole]::SetWindowLong($hwnd, -16, ($style -band (-bnot (0x00C00000 -bor 0x00040000 -bor 0x00020000 -bor 0x00010000))))
+        # a tela inteira em colunas (igual ao fundo); o terminal ocupa so a faixa central
+        $cw = [AknConsole]::Width(); $chh = [AknConsole]::Height()
+        $all = [int][math]::Floor($work.Width / $cw)
+        $rows = [int][math]::Floor($work.Height / $chh)
+        $cols = $all; if ($all -ge 170) { $cols = 140 }
+        $cols = [math]::Min($cols, [Console]::LargestWindowWidth); $rows = [math]::Min($rows, [Console]::LargestWindowHeight)
+        $script:PanelCols = $cols
+        [Console]::SetWindowSize([math]::Min($cols, [Console]::WindowWidth), [math]::Min($rows, [Console]::WindowHeight))
+        [Console]::BufferWidth = $cols
+        [Console]::SetWindowSize($cols, $rows)
+        $x = $work.Left + [int][math]::Floor(($all - $cols) / 2) * $cw
+        [void][AknConsole]::SetWindowPos($hwnd, [IntPtr]::Zero, $x, $work.Top, $cols * $cw + 2, $work.Height, 0x0004 -bor 0x0020)
+        [void][AknConsole]::ShowScrollBar($hwnd, 3, $false)
+    } catch {}
+}
+
+# fundo preto do terminal vira transparente (so o texto fica visivel) ou volta a ser opaco
+function Set-Transparent([bool]$on) {
+    try {
+        $hwnd = [AknConsole]::GetConsoleWindow()
+        $ex = [AknConsole]::GetWindowLong($hwnd, -20)
+        [void][AknConsole]::SetWindowLong($hwnd, -20, ($ex -bor 0x80000))
+        if ($on) { [void][AknConsole]::SetLayeredWindowAttributes($hwnd, [AknConsole]::BlackKey(), 0, 1) }
+        else { [void][AknConsole]::SetLayeredWindowAttributes($hwnd, 0, 255, 2) }
+        [void][AknConsole]::ShowScrollBar($hwnd, 3, $false)
+    } catch {}
+}
+
+function Test-OniFundo { $script:OniFundo -and -not $script:OniFundo.HasExited }
+function Start-OniFundo {
+    if (Test-OniFundo) { return $true }
+    if (-not $OniScript -or $script:InWT) { return $false }
+    try {
+        $me = [long][AknConsole]::GetConsoleWindow()
+        $cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$OniScript`" -Fundo -Pai $PID -Foco $me -Fonte $([AknConsole]::Height()) -Painel $script:PanelCols"
+        $script:OniFundo = Start-Process conhost.exe -ArgumentList $cmd -WindowStyle Hidden -PassThru
+    } catch { return $false }
+    # espera o fundo aparecer antes de deixar o terminal transparente
+    Start-Sleep -Milliseconds 1200
+    Set-Transparent $true
+    $true
+}
+function Stop-OniFundo {
+    if (Test-OniFundo) { try { $script:OniFundo.Kill() } catch {} }
+    $script:OniFundo = $null
+$script:PanelCols = 0
+    Set-Transparent $false
+}
+
+# oni      -> liga o fundo matrix (se tiver sido desligado)
+# oni off  -> desliga o fundo e deixa o terminal opaco
+function Start-OniMatrix($arg) {
+    if (-not $OniScript) { Err 'oni-matrix.ps1 nao encontrado (coloque em D:\Terminal ou D:\Oni).'; return }
+    if ($script:InWT) { Err 'O fundo matrix precisa do console classico (abra pelo ABRIR TERMINAL.bat).'; return }
+    if ("$arg".ToLower().Trim() -eq 'off') { Stop-OniFundo; Bot 'Fundo matrix desligado. (oni liga de novo)'; return }
+    if (Test-OniFundo) { Bot 'O fundo matrix ja esta ligado. (oni off desliga)'; return }
+    if (Start-OniFundo) { Bot 'Fundo matrix ligado.' } else { Err 'Nao consegui ligar o fundo matrix.' }
+}
+# o nome sobe em chamas: cada letra aparece de baixo pra cima com a ponta do fogo amarela/branca,
+# faiscas sobem por cima e no fim assenta nas cores do tema
+function Show-OniBanner($colors) {
+    $pad = Center-Pad $BannerWidth
+    Cursor $false
+    Write-Host ''
+    for ($r = 0; $r -lt 7; $r++) { Write-Host '' }
+    $top = [Console]::CursorTop - 7
+    $noise = for ($x = 0; $x -lt $BannerWidth; $x++) { $Rnd.Next(0, 4) }
+    for ($f = 0; $f -le 20; $f++) {
+        # faiscas na linha de cima
+        [Console]::SetCursorPosition($pad, $top); [Console]::Write(' ' * $BannerWidth)
+        for ($k = 0; $k -lt 4; $k++) {
+            [Console]::SetCursorPosition($pad + $Rnd.Next($BannerWidth), $top)
+            [Console]::ForegroundColor = @('Yellow', 'Red', 'DarkRed')[$Rnd.Next(3)]; [Console]::Write(@('·', '*', '.')[$Rnd.Next(3)])
+        }
+        for ($r = 0; $r -lt 6; $r++) {
+            [Console]::SetCursorPosition($pad, $top + 1 + $r)
+            $run = ''; $runColor = $null
+            for ($x = 0; $x -lt $BannerWidth; $x++) {
+                $level = $f - (5 - $r) * 2 - $noise[$x]
+                $ch = $BannerLines[$r][$x]; $c = $colors[$r]
+                if ($level -lt 0) { $ch = ' ' } elseif ($level -lt 1) { $c = 'White' } elseif ($level -lt 3) { $c = 'Yellow' }
+                if ($c -ne $runColor -and $run) { [Console]::ForegroundColor = $runColor; [Console]::Write($run); $run = '' }
+                $runColor = $c; $run += $ch
+            }
+            if ($run) { [Console]::ForegroundColor = $runColor; [Console]::Write($run) }
+        }
+        if ($f % 4 -eq 0) { Play (80 + $Rnd.Next(30)),35 } else { Start-Sleep -Milliseconds 35 }
+    }
+    [Console]::SetCursorPosition($pad, $top); [Console]::Write(' ' * $BannerWidth)
+    Play 330,90,440,90,494,90,659,220
+    [Console]::ForegroundColor = 'Gray'
+    [Console]::SetCursorPosition(0, $top + 7)
+    Write-Host ''
+    Cursor $true
+}
+
+# titulo do criador em katakana (鬼 アケネティック 鬼), em pontinhos como a mascara
+$JpTitle = @'
+  ⣀⣀⣀⣀⣿⣟⣀⣀⣀⣀⣀                         ⣰⣤⡀             ⣠⣶⣤⣀⡀        ⣀⣀⣀⣀⣀⣀⣀⣀⣀                               ⢀⣦⣄           ⢀⣀⣀⣀⣸⣿⣃⣀⣀⣀⣀⡀
+  ⣿⡟⠛⠛⢻⣿⠛⠛⠛⢻⣿      ⠸⠿⠿⠿⠿⠿⠿⠿⠿⠿⢿⣿⣷     ⢠⣿⡟               ⠉⠙⠻⠃        ⠛⠛⠛⠛⠛⠛⠛⠛⠛           ⡀                  ⢀⣾⣿⣋⣀⣀⣀⣀       ⢸⣿⠛⠛⠛⣿⡟⠛⠛⠛⣿⡇
+  ⣿⣷⣤⣤⣼⣿⣦⣤⣤⣾⣿           ⢲⣶⡄⢀⣴⣿⠟⠁    ⣰⣿⣿⣶⣶⣶⣶⣶⣶⣶⣶⡆   ⠸⠿⠿⠿⠿⠿⢿⣿⣿⠆    ⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀⣀       ⢀⣴⣿⠗   ⡀ ⢠⣶⡀  ⣶⣤    ⣠⣿⡿⠛⠛⠛⢻⣿⡿⠃      ⢸⣿⣦⣤⣤⣿⣷⣤⣤⣴⣿⡇
+  ⣿⣧⣀⣀⣸⣿⣄⣀⣀⣼⣿           ⣸⣿ ⠉⠛⠁    ⢀⣼⣿⠏   ⢸⣿⠇           ⣠⣶⡿⠛⣁     ⠛⠛⠛⠛⠛⢻⣿⡟⠛⠛⠛⠛⠛     ⢀⣴⣿⡟⠁   ⠹⣿⣆ ⢻⡷ ⣰⣿⠇  ⣠⣾⡿⠋   ⢠⣿⡿⠁       ⢸⣿⣄⣀⣀⣿⣧⣀⣀⣠⣿⡇
+  ⠉⠉⢹⣿⠉⢹⣿⠉⣭⡍⣉          ⢀⣿⡿        ⠉⠛⠁   ⢀⣿⡿        ⢀⣠⣴⣿⢿⣿⡇⠘⠻⣿⣶⣄       ⣸⣿⡇       ⢀⣤⣾⡿⠛⣿⡇     ⠙⠋   ⣰⣿⠏    ⠉   ⢀⣴⣿⠟         ⠈⠉⠉⣿⡏⠉⣿⡏⢩⣭⢉⡁
+   ⣠⣿⠏ ⢸⣿⣴⣿⣤⣿⣧        ⣠⣾⡿⠁             ⣠⣾⡿⠁      ⠐⢾⡿⠟⠋ ⢸⣿⡇   ⠙⠃      ⣠⣿⡟        ⠉⠋⠁  ⣿⡇        ⢀⣼⡿⠃       ⢀⣴⣿⡿⠋           ⢀⣼⡿⠁ ⣿⣧⣾⣧⣼⣿⡄
+⢤⣴⣾⠿⠋  ⢸⣿⣬⣤⣤⣤⣾⠇     ⠐⢾⡿⠛             ⣠⣾⣿⠟⠁             ⢸⣿⡇         ⢤⣾⡿⠋             ⢸⣿⡇      ⣠⣶⡿⠋       ⣤⣶⣿⠟⠁          ⠠⣤⣶⡿⠟⠁  ⣿⣧⣥⣤⣤⣴⡿
+ ⠉      ⠉⠉⠉⠉⠉                         ⠉                ⠈⠉⠁          ⠉               ⠈⠉⠁       ⠉          ⠉              ⠈⠁     ⠈⠉⠉⠉⠉⠁
+'@ -split "`r?`n"
+$script:UseJpTitle = $false
+
+function Show-JpBanner([switch]$Animated, $colors = $script:T.G) {
+    $lines = $JpTitle
+    $w = ($lines | Measure-Object -Property Length -Maximum).Maximum
+    $pad = Center-Pad $w
+    Cursor $false
+    Write-Host ''
+    foreach ($l in $lines) { Write-Host '' }
+    $top = [Console]::CursorTop - $lines.Count
+    $rowColor = { param($r) $colors[[math]::Min(5, [int]($r * 6 / $lines.Count))] }
+    if ($Animated) {
+        # passa uma lamina da esquerda pra direita: atras dela a letra fica em brasa
+        for ($s = 0; $s -le $w + 8; $s += 4) {
+            for ($r = 0; $r -lt $lines.Count; $r++) {
+                $ln = $lines[$r].PadRight($w)
+                $a = [math]::Max(0, $s - 8); $b = [math]::Min($w, $s)
+                try {
+                    [Console]::SetCursorPosition($pad + $a, $top + $r)
+                    if ($b -gt $a) { [Console]::ForegroundColor = 'Red'; [Console]::Write($ln.Substring($a, $b - $a)) }
+                    if ($a -gt 0) { [Console]::SetCursorPosition($pad, $top + $r); [Console]::ForegroundColor = 'DarkRed'; [Console]::Write($ln.Substring(0, $a)) }
+                    if ($b -lt $w) { [Console]::SetCursorPosition($pad + $b, $top + $r); [Console]::ForegroundColor = 'White'; [Console]::Write($ln.Substring($b, 1)) }
+                } catch {}
+            }
+            if ($s % 16 -eq 0) { Play (90 + $s),18 } else { Start-Sleep -Milliseconds 12 }
+        }
+        Play 330,90,440,90,659,220
+    }
+    for ($r = 0; $r -lt $lines.Count; $r++) {
+        try { [Console]::SetCursorPosition($pad, $top + $r); [Console]::ForegroundColor = (& $rowColor $r); [Console]::Write($lines[$r]) } catch {}
+    }
+    try { [Console]::SetCursorPosition(0, $top + $lines.Count) } catch {}
+    [Console]::ForegroundColor = 'Gray'
+    Write-Host ''
+    $sub = '─────  A  K  E  N  E  T  I  C  ─────'
+    Write-Host (' ' * (Center-Pad $sub.Length)) -NoNewline; Write-Host $sub -ForegroundColor DarkRed
+    Cursor $true
+}
+
 function Show-Banner([switch]$Animated, $colors = $script:T.G) {
+    if ($script:UseJpTitle) { Show-JpBanner -Animated:$Animated $colors; return }
+    if ($Animated -and (Test-OniMode)) { try { Show-OniBanner $colors; return } catch {} }
     if ($Animated -and (Test-NeonMode)) { try { Show-NeonBanner $colors; return } catch {} }
     if ($Animated -and (Test-GoldMode)) { try { Show-GoldBanner $colors; return } catch {} }
     $pad = Center-Pad $BannerWidth
@@ -438,7 +867,7 @@ function Show-Banner([switch]$Animated, $colors = $script:T.G) {
 function Show-Header([switch]$Animated) {
     Clear-Host
     Show-Banner -Animated:$Animated
-    $edition = "v$Version"; if ($IsPremium) { $edition += ' PREMIUM' }
+    $edition = "v$Version"; if ($IsCreator) { $edition += ' CRIADOR' } elseif ($IsOperator) { $edition += ' OPERADOR' }
     Box @("AKENETIC TERMINAL $edition  ·  pendrive $Drive  ·  tema: $script:ThemeName",
           "Digite 'ajuda' para ver os comandos. Comandos do CMD tambem funcionam.")
 }
@@ -476,7 +905,22 @@ $Commands = [ordered]@{
     'relatorio [texto]'= 'achou um bug? manda pro criador (cifrado)'
     'sair'             = 'fecha o terminal'
 }
-if ($IsPremium) {
+if ($IsOperator) {
+    $Commands.Insert($Commands.Count - 1, 'salas', '[OPERADOR] quantas salas e pessoas estao online agora')
+    $Commands.Insert($Commands.Count - 1, 'fogos', '[OPERADOR] show de fogos de artificio')
+    $Commands.Insert($Commands.Count - 1, 'musica [n]', '[OPERADOR] player com 6 musicas e equalizador')
+    $Commands.Insert($Commands.Count - 1, 'efeitos on|off', '[OPERADOR] particulas pela tela do terminal')
+    $Commands.Insert($Commands.Count - 1, 'cofre', '[OPERADOR] cofre de senhas (cofre ajuda)')
+    $Commands.Insert($Commands.Count - 1, 'backup-premium [pasta]', '[OPERADOR] backup criptografado')
+    $Commands.Insert($Commands.Count - 1, 'operador', '[OPERADOR] sua licenca de operador')
+    $Commands['tema <nome>'] = 'verde | azul | roxo | vermelho | arcoiris | prata | neon'
+}
+if ($IsCreator) {
+    $Commands.Insert($Commands.Count - 1, 'central', '[CRIADOR] painel de controle do AKENETIC')
+    $Commands.Insert($Commands.Count - 1, 'operador criar <nome>', '[CRIADOR] gera um kit de operador para um amigo')
+    $Commands.Insert($Commands.Count - 1, 'operador lista | revogar <n>', '[CRIADOR] operadores / cancela um')
+    $Commands.Insert($Commands.Count - 1, 'mascara', '[CRIADOR] a mascara oni')
+    $Commands.Insert($Commands.Count - 1, 'oni | oni off', '[CRIADOR] liga / desliga o fundo matrix com a mascara')
     $Commands.Insert($Commands.Count - 1, 'site', '[PREMIUM] situacao do site do celular')
     $Commands.Insert($Commands.Count - 1, 'site publicar [msg]', '[PREMIUM] envia D:\Celular\index.html pro GitHub')
     $Commands.Insert($Commands.Count - 1, 'site config', '[PREMIUM] configura o token do GitHub')
@@ -494,7 +938,7 @@ if ($IsPremium) {
     $Commands.Insert($Commands.Count - 1, 'criador [criar]', '[PREMIUM] sua chave de criador (selo verificado)')
     $Commands.Insert($Commands.Count - 1, 'vip criar <nome>', '[PREMIUM] gera um convite VIP assinado')
     $Commands.Insert($Commands.Count - 1, 'vip lista | revogar <n>', '[PREMIUM] convites feitos / cancela um')
-    $Commands['tema <nome>'] = 'verde | azul | roxo | vermelho | arcoiris | ouro | neon'
+    $Commands['tema <nome>'] = 'verde | azul | roxo | vermelho | arcoiris | oni | ouro | prata | neon'
 }
 
 function Show-Help {
@@ -598,6 +1042,7 @@ function Matrix {
     $mid = 'Green'; $tail = 'DarkGreen'
     if (Test-GoldMode) { $mid = 'Yellow'; $tail = 'DarkYellow'; $glyphs = '0123456789$*+♦·$$'.ToCharArray() }
     if (Test-NeonMode) { $mid = 'Magenta'; $tail = 'DarkCyan'; $glyphs = '01☼*+=<>/\|~░▒'.ToCharArray() }
+    if (Test-OniMode) { $mid = 'Red'; $tail = 'DarkRed'; $glyphs = '▲*+·!/\^~'.ToCharArray() }
     while (-not [Console]::KeyAvailable -and (Get-Date) -lt $end) {
         for ($x = 0; $x -lt $w; $x += 2) {
             $cy = $y[$x]
@@ -1007,8 +1452,9 @@ function New-ChatPayload([string]$type, [string]$text = '', $extra = $null) {
     if ($null -ne $extra) { $o.x = $extra }
     # selo do criador: assinatura sobre "id|nome|tipo|texto"; VIP: o convite vai junto
     if ($script:CreatorSigner) { $o.cs = Sign-Text "$id|$($script:ChatName)|$type|$text" }
+    elseif ($script:OpSigner) { $o.ol = $script:OpLicense; $o.os = Sign-OpText "$id|$($script:ChatName)|$type|$text" }
     if ($script:VipToken) { $o.v = $script:VipToken }
-    if ($script:MyColor -and ($script:VipToken -or $script:CreatorSigner)) { $o.c = $script:MyColor }
+    if ($script:MyColor -and ($script:VipToken -or $script:CreatorSigner -or $script:OpSigner)) { $o.c = $script:MyColor }
     Protect-Msg ($o | ConvertTo-Json -Compress -Depth 6)
 }
 
@@ -1220,6 +1666,7 @@ function Write-ChatLine([string]$time, [string]$name, [string]$text, $nameColor,
     Write-Host "  [$time] " -NoNewline -ForegroundColor DarkGray
     $badge = ''; if ($script:Badges) { $badge = $script:Badges[$name] }
     if ($badge -eq 'creator') { Write-Host '♦ ' -NoNewline -ForegroundColor White }
+    elseif ($badge -eq 'op') { Write-Host '♠ ' -NoNewline -ForegroundColor White }
     elseif ($badge -eq 'vip') { Write-Host '☼ ' -NoNewline -ForegroundColor Yellow }
     Write-Host $name -NoNewline -ForegroundColor $nameColor
     Write-Host ' » ' -NoNewline -ForegroundColor $script:T.S
@@ -1681,7 +2128,7 @@ function Chat-Command([string]$text) {
         }
         '^/placar$' { Show-Score; break }
         '^/(cor|brilho|confete)$' {
-            if (-not ($script:VipToken -or $script:CreatorSigner)) { Write-ChatNotice 'exclusivo para VIP (ganhou um convite? vip <convite>)' Yellow; break }
+            if (-not ($script:VipToken -or $script:CreatorSigner -or $script:OpSigner)) { Write-ChatNotice 'exclusivo para VIP (ganhou um convite? vip <convite>)' Yellow; break }
             $what = $Matches[1]
             if ($what -eq 'cor') {
                 $k = "$arg".ToLower()
@@ -1762,7 +2209,11 @@ function Open-ChatRoom {
     if ($name.Length -lt 2 -or $room.Length -lt 4) { Err 'Apelido precisa de 2+ letras e o codigo da sala de 4+.'; return }
     $pass = Read-Secret '  Senha da sala: '
     if ($pass.Length -lt 4) { Err 'A senha precisa de pelo menos 4 caracteres.'; return }
-    if ($IsPremium -and (Test-Path -LiteralPath $CreatorFile) -and -not $script:CreatorSigner) {
+    if ($IsOperator -and -not $script:OpSigner) {
+        Write-Host '  ♠ Selo de operador: digite a senha do seu kit (Enter entra sem selo)' -ForegroundColor DarkGray
+        if (Unlock-Operator -Optional) { Write-Host '  √ selo de operador ativo' -ForegroundColor Green }
+    }
+    if ($IsCreator -and -not $script:CreatorSigner) {
         Write-Host '  ♦ Selo de criador: digite a senha mestra do criador (Enter entra sem selo)' -ForegroundColor DarkYellow
         if (Unlock-Creator -Optional) { Write-Host '  √ selo ativo: suas mensagens vao assinadas' -ForegroundColor Green }
     }
@@ -1791,9 +2242,9 @@ function Open-ChatRoom {
     $script:TypingPs         = $null
     $script:ChatNotify       = $true
     $script:Badges           = @{}
-    if ($script:CreatorSigner) { $script:Badges[$name] = 'creator' } elseif ($script:VipToken) { $script:Badges[$name] = 'vip' }
+    if ($script:CreatorSigner) { $script:Badges[$name] = 'creator' } elseif ($script:OpSigner) { $script:Badges[$name] = 'op' } elseif ($script:VipToken) { $script:Badges[$name] = 'vip' }
     $script:NameColors = @{}
-    if ($script:MyColor -and ($script:CreatorSigner -or $script:VipToken)) { $script:NameColors[$name] = $script:MyColor }
+    if ($script:MyColor -and ($script:CreatorSigner -or $script:OpSigner -or $script:VipToken)) { $script:NameColors[$name] = $script:MyColor }
     $script:Velha = $null; $script:PptRounds = @{}; $script:MyPpt = @{}; $script:Race = $null; $script:Score = @{}
     Open-ChatLog
 
@@ -2002,6 +2453,7 @@ function Get-SiteFiles {
         $list += @{ Path = $f.Name; File = $f.FullName }
     }
     $list += @{ Path = 'pc/terminal.ps1'; File = Join-Path $Root 'terminal.ps1' }
+    $list += @{ Path = 'pc/terminal.sig'; File = Join-Path $Root 'terminal.sig' }
     $list += @{ Path = 'pc/ABRIR TERMINAL.bat'; File = "$Drive\ABRIR TERMINAL.bat" }
     # site de apresentacao (D:\Site) vai para /sobre/
     $siteDir = "$Drive\Site"
@@ -2033,6 +2485,7 @@ Termos de Uso: $($SiteBase)sobre/termos.html
     $entries = @(
         @{ Name = 'ABRIR TERMINAL.bat'; Bytes = [IO.File]::ReadAllBytes("$Drive\ABRIR TERMINAL.bat") },
         @{ Name = 'Terminal/terminal.ps1'; Bytes = [IO.File]::ReadAllBytes((Join-Path $Root 'terminal.ps1')) },
+        @{ Name = 'Terminal/terminal.sig'; Bytes = [IO.File]::ReadAllBytes((Join-Path $Root 'terminal.sig')) },
         @{ Name = 'LEIA-ME.txt'; Bytes = [Text.Encoding]::UTF8.GetBytes($readme.Replace("`n", "`r`n").Replace("`r`r", "`r")) }
     )
     Add-Type -AssemblyName System.IO.Compression
@@ -2085,6 +2538,11 @@ function Site-Status {
 
 function Site-Publish([string]$msg) {
     if (-not (Unlock-GitHub)) { return }
+    # CACA ONI: o terminal so sai assinado (senao o 'atualizar' dos amigos recusa)
+    if ((Get-LocalSigState) -ne 'ok') {
+        Bot 'Assinando o terminal com a sua chave de criador...'
+        if (-not (New-TerminalSig)) { Err 'Sem a assinatura do criador nada foi publicado.'; return }
+    }
     try { Build-PendriveZip } catch { Err "Nao consegui gerar o zip do pendrive: $($_.Exception.Message)" }
     # se o app ou o terminal mudaram, pergunta as novidades (vao junto, em novidades.json)
     try {
@@ -2473,6 +2931,10 @@ function Set-CreatorPubInFiles([string]$pub) {
 
 function Get-Badge($p, [string]$name) {
     if ($p.cs -and (Test-CreatorSig "$($p.i)|$($p.n)|$($p.t)|$($p.m)" ([string]$p.cs))) { return 'creator' }
+    if ($p.ol -and $p.os) {
+        $op = Test-OperatorLicense ([string]$p.ol)
+        if ($op -and ([string]$op.n) -ieq $name -and (Test-OpSig ([string]$op.k) "$($p.i)|$($p.n)|$($p.t)|$($p.m)" ([string]$p.os))) { return 'op' }
+    }
     if ($p.v) { $v = Test-VipToken ([string]$p.v); if ($v -and ([string]$v.n) -ieq $name) { return 'vip' } }
     ''
 }
@@ -2520,6 +2982,7 @@ function Creator([string]$arg) {
                     ConvertTo-Json | Set-Content -LiteralPath $CreatorFile -Encoding UTF8
                 Set-CreatorPubInFiles $pub
                 Set-CreatorSigner $priv
+                $script:IsCreator = $true; $script:IsPremium = $true   # cargo vale ja, sem reiniciar
             } catch { Err "Nao consegui criar a chave: $($_.Exception.Message)"; return }
             Write-Host ''
             Box @('♦ CHAVE DE CRIADOR CRIADA ♦', '',
@@ -2552,7 +3015,7 @@ function Creator([string]$arg) {
 }
 
 function Redeem-Vip([string]$token) {
-    if ($IsPremium) { Bot 'Voce e o criador, nao precisa de convite :)'; return }
+    if ($IsCreator) { Bot 'Voce e o criador, nao precisa de convite :)'; return }
     if (-not $script:CreatorPub) { Err 'Este AKENETIC ainda nao conhece a chave do criador. Digite atualizar e tente de novo.'; return }
     $rv = Get-SiteJson 'vip-revogados.json'; if ($rv) { $script:VipRevoked = @($rv | ForEach-Object { [string]$_ }) }
     Spin 'Conferindo a assinatura do criador...' 600
@@ -2578,12 +3041,12 @@ function Vip([string]$arg) {
     $sub, $rest = "$arg" -split '\s+', 2
     switch ("$sub".ToLower()) {
         '' {
-            if ($IsPremium) { Bot 'Voce e o criador. Crie convites com: vip criar <nome>'; return }
+            if ($IsCreator) { Bot 'Voce e o criador. Crie convites com: vip criar <nome>'; return }
             if ($script:IsVip) { Bot "Voce e VIP: $($script:VipInfo.n) (convite de $($script:VipInfo.d)). Use: tema neon   |   vip cartao" }
             else { Bot 'Ganhou um convite VIP? Cole aqui: vip AKNVIP.xxxx' }
         }
         'criar' {
-            if (-not $IsPremium) { Err 'So o criador cria convites.'; return }
+            if (-not $IsCreator) { Err 'So o criador cria convites.'; return }
             $name = Cut "$rest" 16
             if ($name.Length -lt 2) { Err 'Use: vip criar <apelido do amigo>   (o mesmo que ele usa no chat)'; return }
             if (-not (Unlock-Creator)) { return }
@@ -2601,7 +3064,8 @@ function Vip([string]$arg) {
         { $_ -in 'cartao', 'cartão' } {
             if (-not ($IsPremium -or $script:IsVip)) { Err 'So para VIPs. Ganhou um convite? vip <convite>'; return }
             $n = [string]$script:VipInfo.n; $d = [string]$script:VipInfo.d; $id = [string]$script:VipInfo.id; $title = '☼  AKENETIC  VIP  ☼'
-            if ($IsPremium) { $n = [string]$script:Account.nome; $d = [string]$script:Account.criada; $id = 'CRIADOR'; $title = '♦  AKENETIC  CRIADOR  ♦' }
+            if ($IsCreator) { $n = [string]$script:Account.nome; $d = [string]$script:Account.criada; $id = 'CRIADOR'; $title = '▲  AKENETIC  CRIADOR  ▲' }
+            elseif ($IsOperator) { $n = [string]$script:OpInfo.n; $d = [string]$script:OpInfo.d; $id = [string]$script:OpInfo.id; $title = '♠  AKENETIC  OPERADOR  ♠' }
             $lines = @($title, '', $n.ToUpper(), "membro desde $d", "n. $id")
             Write-Host ''
             Box $lines 'Magenta' 'White'
@@ -2613,7 +3077,7 @@ function Vip([string]$arg) {
             }
         }
         'lista' {
-            if (-not $IsPremium) { Err 'So o criador ve a lista.'; return }
+            if (-not $IsCreator) { Err 'So o criador ve a lista.'; return }
             if (-not (Test-Path -LiteralPath $VipListFile)) { Bot 'Nenhum convite criado ainda.'; return }
             $revoked = @(); if (Test-Path -LiteralPath $RevokedFile) { $revoked = @(Get-Content -LiteralPath $RevokedFile -Raw | ConvertFrom-Json | ForEach-Object { $_ }) }
             Write-Host ''
@@ -2625,7 +3089,7 @@ function Vip([string]$arg) {
             }
         }
         'revogar' {
-            if (-not $IsPremium) { Err 'So o criador revoga convites.'; return }
+            if (-not $IsCreator) { Err 'So o criador revoga convites.'; return }
             $name = Cut "$rest" 16
             if (-not (Test-Path -LiteralPath $VipListFile)) { Err 'Nenhum convite criado ainda.'; return }
             $ids = @(Get-Content -LiteralPath $VipListFile -Encoding UTF8 | Where-Object { ($_ -split "`t")[1] -ieq $name } | ForEach-Object { ($_ -split "`t")[0] })
@@ -2657,8 +3121,9 @@ function Check-VipRevoked {
 # No tema ouro/neon (premium ou VIP), enquanto o prompt espera, brilhinhos aparecem em celulas
 # VAZIAS da tela e somem sozinhos. So apagamos uma celula se ela ainda tiver o nosso brilho,
 # entao texto nunca e estragado (nem se a tela rolar).
-function Test-FxMode { ((Test-GoldMode) -or (Test-NeonMode)) -and $script:Particles }
+function Test-FxMode { ((Test-GoldMode) -or (Test-NeonMode) -or (Test-OniMode)) -and $script:Particles }
 function Get-FxPalette {
+    if (Test-OniMode) { return @('Yellow', 'Red', 'Red', 'DarkRed', 'DarkGray') }   # brasas
     if (Test-NeonMode) { @('White', 'Cyan', 'Magenta', 'DarkCyan', 'DarkMagenta') } else { @('White', 'Yellow', 'Yellow', 'DarkYellow', 'DarkYellow') }
 }
 
@@ -2739,6 +3204,7 @@ function Show-Fireworks {
     $W = [Console]::WindowWidth - 1; $H = [Console]::WindowHeight - 1; $top = [Console]::WindowTop
     $pal = @('Red', 'Yellow', 'Green', 'Cyan', 'Magenta', 'White', 'Blue')
     if (Test-GoldMode) { $pal = @('Yellow', 'White', 'Yellow', 'DarkYellow') } elseif (Test-NeonMode) { $pal = @('Cyan', 'Magenta', 'White', 'Cyan', 'Magenta') }
+    elseif (Test-OniMode) { $pal = @('Red', 'Yellow', 'White', 'Red', 'DarkYellow') }
     $dark = @{ Red = 'DarkRed'; Yellow = 'DarkYellow'; Green = 'DarkGreen'; Cyan = 'DarkCyan'; Magenta = 'DarkMagenta'; White = 'Gray'; Blue = 'DarkBlue'; DarkYellow = 'DarkGray' }
     $rockets = New-Object System.Collections.Generic.List[object]
     $parts = New-Object System.Collections.Generic.List[object]
@@ -2831,6 +3297,7 @@ function Music-Player([string]$arg) {
 
     $rows = @('Red', 'Yellow', 'Green', 'Cyan', 'Magenta')
     if (Test-GoldMode) { $rows = @('DarkYellow', 'DarkYellow', 'Yellow', 'Yellow', 'White') } elseif (Test-NeonMode) { $rows = @('DarkMagenta', 'Magenta', 'Cyan', 'Cyan', 'White') }
+    elseif (Test-OniMode) { $rows = @('DarkRed', 'DarkRed', 'Red', 'Yellow', 'White') }
     $pal = @('White', 'Yellow', 'Cyan', 'Magenta'); if (Test-FxMode) { $pal = Get-FxPalette }
     Write-Host ''
     Box @("♪  TOCANDO: $($song.n)", "    $($song.a)") $script:T.P 'White'
@@ -3217,6 +3684,7 @@ function Sync-Reports {
         Add-Content -LiteralPath $ReportsFile -Value "$($o.id)`t$($o.time)`t$($o.message)" -Encoding ASCII
         $new++
     }
+    $script:NewReports = [int]$script:NewReports + $new
     if ($new) { Write-Host "  [*] $new relatorio(s) de bug novo(s) dos usuarios. Digite 'relatorios'." -ForegroundColor Yellow; Play 880,60,1175,90 }
 }
 
@@ -3344,7 +3812,7 @@ function Account-Command([string]$arg) {
     switch ("$arg".ToLower().Trim()) {
         '' {
             Write-Host ''
-            $vip = 'nao'; if ($IsPremium) { $vip = 'criador (premium)' } elseif ($script:IsVip) { $vip = "VIP ($($script:VipInfo.n))" }
+            $vip = 'nao'; if ($IsCreator) { $vip = 'CRIADOR' } elseif ($IsOperator) { $vip = 'OPERADOR' } elseif ($script:IsVip) { $vip = "VIP ($($script:VipInfo.n))" }
             Box @("CONTA: $($a.nome)", "criada em $($a.criada)", "status: $vip", '',
                   'conta exportar   leva a conta pro celular / outro PC',
                   'conta senha      troca a senha') $script:T.P 'White'
@@ -3371,6 +3839,227 @@ function Account-Command([string]$arg) {
         }
         default { Err 'Use: conta | conta exportar | conta senha' }
     }
+}
+
+# ----------------------------------------------------------------- operadores (versao leve)
+# Licenca assinada pelo criador + chave propria do operador, usada SO para o selo ♠ no chat.
+# O operador nao tem poder sobre outras pessoas: ganha extras visuais, cofre, 'salas' e o selo.
+$OpListFile    = Join-Path $Root 'operadores.txt'
+$OpRevokedFile = "$Drive\Celular\op-revogados.json"
+$script:OpSigner = $null
+$script:OpVerifiers = @{}
+
+function New-EcdsaVerifier([string]$xyB64) {
+    $blob = New-Object byte[] 72
+    [Array]::Copy([byte[]](0x45, 0x43, 0x53, 0x31, 0x20, 0, 0, 0), $blob, 8)
+    [Array]::Copy([Convert]::FromBase64String($xyB64), 0, $blob, 8, 64)
+    $v = [Security.Cryptography.ECDsaCng]::new([Security.Cryptography.CngKey]::Import($blob, [Security.Cryptography.CngKeyBlobFormat]::EccPublicBlob))
+    $v.HashAlgorithm = [Security.Cryptography.CngAlgorithm]::Sha256
+    $v
+}
+
+function Test-OpSig([string]$xyB64, [string]$text, [string]$sig) {
+    try {
+        if (-not $script:OpVerifiers.ContainsKey($xyB64)) { $script:OpVerifiers[$xyB64] = New-EcdsaVerifier $xyB64 }
+        $script:OpVerifiers[$xyB64].VerifyData([Text.Encoding]::UTF8.GetBytes($text), [Convert]::FromBase64String($sig))
+    } catch { $false }
+}
+
+function Sign-OpText([string]$text) {
+    if (-not $script:OpSigner) { return $null }
+    [Convert]::ToBase64String($script:OpSigner.SignData([Text.Encoding]::UTF8.GetBytes($text)))
+}
+
+function Unlock-Operator([switch]$Optional) {
+    if ($script:OpSigner) { return $true }
+    if (-not $script:OpLicense) { return $false }
+    try {
+        $kit  = Get-Content -LiteralPath $OperatorFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $pass = Read-Secret '  Senha do kit de operador: '
+        if (-not $pass -and $Optional) { return $false }
+        $priv = Unprotect-Bytes ([Convert]::FromBase64String($kit.d)) (New-SecretKeys $pass ([Convert]::FromBase64String($kit.s)))
+        if ($null -eq $priv) { Err 'Senha errada.'; return $false }
+        $s = [Security.Cryptography.ECDsaCng]::new([Security.Cryptography.CngKey]::Import($priv, [Security.Cryptography.CngKeyBlobFormat]::EccPrivateBlob))
+        $s.HashAlgorithm = [Security.Cryptography.CngAlgorithm]::Sha256
+        $script:OpSigner = $s
+        $true
+    } catch { Err 'O operador.key esta corrompido.'; $false }
+}
+
+function Read-RevokedList([string]$file) {
+    if (-not (Test-Path -LiteralPath $file)) { return @() }
+    @(Get-Content -LiteralPath $file -Raw | ConvertFrom-Json | ForEach-Object { [string]$_ })
+}
+
+function Operator-Command([string]$arg) {
+    $sub, $rest = "$arg" -split '\s+', 2
+    switch ("$sub".ToLower()) {
+        '' {
+            if ($IsCreator) { Bot 'Voce e o criador. Use: operador criar <nome> | operador lista | operador revogar <nome>'; return }
+            if ($script:IsOperator) {
+                Box @("♠  OPERADOR: $($script:OpInfo.n)", "licenca n. $($script:OpInfo.id)  ·  desde $($script:OpInfo.d)", '',
+                      'Extras: temas prata e neon, efeitos, fogos, musica,', 'cofre, salas e o selo ♠ verificado no chat.') $script:T.P 'White'
+                return
+            }
+            Bot 'Ganhou um kit de operador do criador? Use: operador ativar (e escolha o arquivo .akop)'
+        }
+        'criar' {
+            if (-not $IsCreator) { Err 'So o criador cria operadores.'; return }
+            $name = Cut "$rest" 16
+            if ($name.Length -lt 2) { Err 'Use: operador criar <apelido do amigo>   (o mesmo da conta dele)'; return }
+            if (-not (Unlock-Creator)) { return }
+            Write-Host '  Crie uma senha para o kit. Passe ela pro seu amigo junto com o arquivo (pessoalmente e melhor).' -ForegroundColor DarkGray
+            $p1 = Read-Secret '  Senha do kit (6+): '
+            if ($p1.Length -lt 6) { Err 'Senha muito curta.'; return }
+            $p2 = Read-Secret '  Repita: '
+            if ($p1 -cne $p2) { Err 'As senhas nao batem.'; return }
+            try {
+                $params = New-Object Security.Cryptography.CngKeyCreationParameters
+                $params.ExportPolicy = [Security.Cryptography.CngExportPolicies]::AllowPlaintextExport
+                $key  = [Security.Cryptography.CngKey]::Create([Security.Cryptography.CngAlgorithm]::ECDsaP256, [NullString]::Value, $params)
+                $priv = $key.Export([Security.Cryptography.CngKeyBlobFormat]::EccPrivateBlob)
+                $pub  = [Convert]::ToBase64String($key.Export([Security.Cryptography.CngKeyBlobFormat]::EccPublicBlob), 8, 64)
+                $id   = -join ((1..8) | ForEach-Object { '{0:x}' -f $Rnd.Next(16) })
+                $body = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(([ordered]@{ n = $name; id = $id; d = (Get-Date -Format 'dd/MM/yyyy'); k = $pub } | ConvertTo-Json -Compress)))
+                $lic  = "AKNOP.$body.$(Sign-Text $body)"
+                $salt = New-Object byte[] 16; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($salt)
+                $data = Protect-Bytes $priv (New-SecretKeys $p1 $salt)
+                $out  = Join-Path ([Environment]::GetFolderPath('Desktop')) "AKENETIC-operador-$name.akop"
+                @{ lic = $lic; s = [Convert]::ToBase64String($salt); d = [Convert]::ToBase64String($data) } | ConvertTo-Json | Set-Content -LiteralPath $out -Encoding UTF8
+                Add-Content -LiteralPath $OpListFile -Value "$id`t$name`t$(Get-Date -Format 'dd/MM/yyyy')" -Encoding UTF8
+            } catch { Err "Nao consegui criar o kit: $($_.Exception.Message)"; return }
+            Write-Host ''
+            Box @("♠ KIT DE OPERADOR PARA $($name.ToUpper()) ♠", '', $out, '',
+                  '1. Passe o arquivo e a senha do kit pro seu amigo',
+                  '2. No AKENETIC dele (v2.5+):  operador ativar',
+                  '3. Para cancelar depois:      operador revogar ' + $name) $script:T.P 'White'
+            Sfx ok
+        }
+        'ativar' {
+            if ($IsCreator) { Bot 'Voce ja e o criador :)'; return }
+            if (-not $script:CreatorPub) { Err 'Este AKENETIC ainda nao conhece o criador. Digite atualizar e tente de novo.'; return }
+            $path = "$rest".Trim().Trim('"')
+            if (-not $path) {
+                try {
+                    Add-Type -AssemblyName System.Windows.Forms
+                    $dlg = New-Object Windows.Forms.OpenFileDialog
+                    $dlg.Title = 'AKENETIC - escolha o kit de operador (.akop)'; $dlg.Filter = 'Kit de operador (*.akop)|*.akop'
+                    $owner = New-Object Windows.Forms.Form -Property @{ TopMost = $true }
+                    $ok = $dlg.ShowDialog($owner); $owner.Dispose()
+                    if ($ok -ne 'OK') { return }
+                    $path = $dlg.FileName
+                } catch { Err 'Use: operador ativar C:\caminho\AKENETIC-operador-nome.akop'; return }
+            }
+            try { $kit = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json } catch { Err 'Arquivo de kit invalido.'; return }
+            $rv = Get-SiteJson 'op-revogados.json'; if ($rv) { $script:OpRevoked = @($rv | ForEach-Object { [string]$_ }) }
+            $info = Test-OperatorLicense $kit.lic
+            if (-not $info) { Err 'Kit invalido ou cancelado pelo criador.'; return }
+            $pass = Read-Secret '  Senha do kit: '
+            $priv = Unprotect-Bytes ([Convert]::FromBase64String($kit.d)) (New-SecretKeys $pass ([Convert]::FromBase64String($kit.s)))
+            if ($null -eq $priv) { Err 'Senha do kit errada.'; return }
+            if ($script:Account -and ([string]$info.n) -ine [string]$script:Account.nome) {
+                Write-Host "  Atencao: o kit e de '$($info.n)', mas sua conta e '$($script:Account.nome)'. O selo so aparece com o nome do kit." -ForegroundColor Yellow
+            }
+            Copy-Item -LiteralPath $path $OperatorFile -Force
+            Box @("♠  BEM-VINDO, OPERADOR $($info.n)!  ♠", '', 'Reiniciando o AKENETIC para liberar os extras...') 'White' 'White'
+            Play 523,80,659,80,784,80,1047,220
+            Start-Sleep -Milliseconds 900
+            Start-Process -FilePath "$Drive\ABRIR TERMINAL.bat" -WorkingDirectory "$Drive\"
+            Set-Location $env:TEMP
+            exit
+        }
+        'lista' {
+            if (-not $IsCreator) { Err 'So o criador ve a lista.'; return }
+            if (-not (Test-Path -LiteralPath $OpListFile)) { Bot 'Nenhum operador criado ainda.'; return }
+            $revoked = Read-RevokedList $OpRevokedFile
+            Write-Host ''
+            foreach ($l in Get-Content -LiteralPath $OpListFile -Encoding UTF8) {
+                $id, $n, $d = $l -split "`t"
+                $tag = '♠ ativo    '; $c = 'White'; if ($revoked -contains $id) { $tag = 'x revogado '; $c = 'DarkGray' }
+                Write-Host "  $tag" -NoNewline -ForegroundColor $c
+                Write-Host ('{0,-18}{1}' -f $n, $d) -ForegroundColor $script:T.T
+            }
+        }
+        'revogar' {
+            if (-not $IsCreator) { Err 'So o criador revoga operadores.'; return }
+            $name = Cut "$rest" 16
+            if (-not (Test-Path -LiteralPath $OpListFile)) { Err 'Nenhum operador criado ainda.'; return }
+            $ids = @(Get-Content -LiteralPath $OpListFile -Encoding UTF8 | Where-Object { ($_ -split "`t")[1] -ieq $name } | ForEach-Object { ($_ -split "`t")[0] })
+            if (-not $ids.Count) { Err "Nao achei operador '$name'. Veja: operador lista"; return }
+            if (-not (Confirm-Yes "Cancelar o operador $name?")) { return }
+            $all = @((Read-RevokedList $OpRevokedFile) + $ids | Select-Object -Unique)
+            [IO.File]::WriteAllText($OpRevokedFile, (ConvertTo-Json -InputObject $all -Compress), (New-Object Text.UTF8Encoding $false))
+            if (Publish-Files @(@{ Path = 'op-revogados.json'; File = $OpRevokedFile }) "AKENETIC: operador $name revogado") { Bot "Operador $name cancelado." }
+        }
+        default { Err 'Use: operador | operador ativar | (criador) operador criar <nome> | lista | revogar <nome>' }
+    }
+}
+
+function Check-OpRevoked {
+    if (-not $script:IsOperator) { return }
+    $rv = Get-SiteJson 'op-revogados.json'
+    if (-not $rv) { return }
+    $script:OpRevoked = @($rv | ForEach-Object { [string]$_ })
+    if ($script:OpRevoked -contains [string]$script:OpInfo.id) {
+        $script:IsOperator = $false; $script:IsPremium = $false; $script:OpLicense = $null
+        Err 'Sua licenca de operador foi cancelada pelo criador.'
+    }
+}
+
+# ----------------------------------------------------------------- central do criador (so leitura)
+function Get-PresenceActive {
+    try {
+        $req = [Net.HttpWebRequest]::Create("https://ntfy.sh/$PresenceTopic/json?poll=1&since=11m")
+        $req.Timeout = 4000; $req.ReadWriteTimeout = 4000
+        $resp = $req.GetResponse(); $txt = (New-Object IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8)).ReadToEnd(); $resp.Close()
+    } catch { return $null }
+    $last = @{}
+    foreach ($l in $txt -split "`n") {
+        if (-not $l.Trim()) { continue }
+        try { $o = $l | ConvertFrom-Json; $j = $o.message | ConvertFrom-Json } catch { continue }
+        if ($o.event -ne 'message' -or "$($j.r)" -notmatch '^[0-9a-f]{8}$' -or "$($j.s)" -notmatch '^[0-9a-f]{8,16}$') { continue }
+        $last[[string]$j.s] = @{ r = [string]$j.r; a = [string]$j.a }
+    }
+    , @($last.Values | Where-Object { $_.a -eq 'on' })
+}
+
+function Get-ListCount([string]$listFile, [string]$revokedFile) {
+    if (-not (Test-Path -LiteralPath $listFile)) { return @(0, 0) }
+    $rev = Read-RevokedList $revokedFile
+    $ids = @(Get-Content -LiteralPath $listFile -Encoding UTF8 | ForEach-Object { ($_ -split "`t")[0] })
+    @(@($ids | Where-Object { $rev -notcontains $_ }).Count, @($ids | Where-Object { $rev -contains $_ }).Count)
+}
+
+function Show-Central([switch]$Compact) {
+    $active = Get-PresenceActive
+    $online = 'sem conexao'
+    if ($null -ne $active) { $online = '{0} sala(s) · {1} pessoa(s)' -f @($active | Group-Object { $_.r }).Count, $active.Count }
+    $reps = 0; if (Test-Path -LiteralPath $ReportsFile) { $reps = @(Get-Content -LiteralPath $ReportsFile).Count }
+    $newReps = [int]$script:NewReports
+    $ops = Get-ListCount $OpListFile $OpRevokedFile
+    $vips = Get-ListCount $VipListFile $RevokedFile
+    if ($Compact) {
+        Write-Host ''
+        Write-Host '  ▲ CENTRAL  ' -NoNewline -ForegroundColor $script:T.A
+        Write-Host "online: $online  ·  relatorios novos: $newReps  ·  operadores: $($ops[0])  ·  VIPs: $($vips[0])   (central = painel completo)" -ForegroundColor DarkGray
+        return
+    }
+    Spin 'Abrindo a central...' 400
+    $remote = Get-RemoteTerminal 5000
+    $pub = 'nao consegui verificar'
+    if ($remote) { if (Same-Bytes $remote.Bytes ([IO.File]::ReadAllBytes((Join-Path $Root 'terminal.ps1')))) { $pub = "v$($remote.Version) publicada (igual ao pendrive)" } else { $pub = "no ar: v$($remote.Version) · pendrive: v$Version (use site publicar)" } }
+    $av = Get-Aviso; $avText = 'nenhum'; if ($av) { $avText = '"' + (Cut ([string]$av.texto) 40) + '"' }
+    $site = 'fora do ar?'; try { $r = Invoke-WebRequest -UseBasicParsing "$($SiteBase)?t=$([DateTime]::UtcNow.Ticks)" -TimeoutSec 8; if ($r.StatusCode -eq 200) { $site = 'no ar' } } catch {}
+    Write-Host ''
+    Box @('▲  CENTRAL DO CRIADOR  ▲', '',
+          ('versao       ' + $pub),
+          ('online agora ' + $online + '      -> salas'),
+          ('relatorios   ' + "$reps no total, $newReps novo(s)" + '      -> relatorios'),
+          ('operadores   ' + "$($ops[0]) ativo(s), $($ops[1]) revogado(s)" + '      -> operador lista'),
+          ('VIPs         ' + "$($vips[0]) ativo(s), $($vips[1]) revogado(s)" + '      -> vip lista'),
+          ('aviso no ar  ' + $avText + '      -> aviso'),
+          ('site         ' + "$site · $($SiteBase)sobre/")) $script:T.P 'White'
+    Sfx ok
 }
 
 # ----------------------------------------------------------------- cofre de senhas (premium)
@@ -3656,13 +4345,125 @@ function Get-RemoteTerminal([int]$timeout = 8000) {
     } catch { $null }
 }
 
+# assinatura publicada junto (pc/terminal.sig); '' se o site nao tem, $null se falhou a conexao
+function Get-RemoteSig([int]$timeout = 8000) {
+    try {
+        $req = [Net.HttpWebRequest]::Create("$($UpdateBase)terminal.sig?akn=$([DateTime]::UtcNow.Ticks)")
+        $req.Timeout = $timeout; $req.ReadWriteTimeout = $timeout; $req.UserAgent = 'AKENETIC'
+        $resp = $req.GetResponse(); $sr = New-Object IO.StreamReader($resp.GetResponseStream())
+        $t = $sr.ReadToEnd(); $resp.Close(); $t
+    } catch {
+        # o PowerShell embrulha a WebException; 404 = o site nao tem assinatura
+        $we = $_.Exception; while ($we -and -not ($we -is [Net.WebException])) { $we = $we.InnerException }
+        if ($we -and $we.Response -and [int]$we.Response.StatusCode -eq 404) { '' } else { $null }
+    }
+}
+
 function Same-Bytes([byte[]]$a, [byte[]]$b) {
     $h = [Security.Cryptography.SHA256]::Create()
     [Convert]::ToBase64String($h.ComputeHash($a)) -eq [Convert]::ToBase64String($h.ComputeHash($b))
 }
 
+# ----------------------------------------------------------------- CACA ONI (anti-adulteracao)
+# Toda versao publicada pelo criador sai assinada: terminal.sig guarda o SHA-256 do terminal.ps1
+# assinado com a chave do criador (a mesma do selo ♦). Sem essa chave ninguem gera uma assinatura
+# que confira. O 'atualizar' so instala versao assinada e o terminal confere a propria assinatura
+# ao abrir. (Quem mexe no codigo pode tirar a conferencia da propria copia, mas nao consegue
+# espalhar a versao alterada pelo 'atualizar' nem falsificar os selos do chat.)
+$SigFile = Join-Path $Root 'terminal.sig'
+$CacaLog = Join-Path $Root 'caca-oni.log'
+
+function Get-TerminalHash([byte[]]$bytes) { [Convert]::ToBase64String([Security.Cryptography.SHA256]::Create().ComputeHash($bytes)) }
+
+# 'ok' = assinatura do criador confere; 'sem' = nao tem assinatura; 'falso' = nao confere
+function Test-TerminalSig([byte[]]$bytes, [string]$sigJson) {
+    if (-not "$sigJson".Trim()) { return 'sem' }
+    try { $j = $sigJson | ConvertFrom-Json } catch { return 'falso' }
+    if ([string]$j.h -ne (Get-TerminalHash $bytes)) { return 'falso' }
+    if (Test-CreatorSig "akn-pc|$($j.v)|$($j.h)" ([string]$j.s)) { 'ok' } else { 'falso' }
+}
+
+function Get-LocalSigState {
+    $sig = ''; if (Test-Path -LiteralPath $SigFile) { $sig = [IO.File]::ReadAllText($SigFile) }
+    Test-TerminalSig ([IO.File]::ReadAllBytes((Join-Path $Root 'terminal.ps1'))) $sig
+}
+
+# assina o terminal.ps1 atual (pede a senha mestra do criador)
+function New-TerminalSig {
+    if (-not (Unlock-Creator)) { return $false }
+    $h = Get-TerminalHash ([IO.File]::ReadAllBytes((Join-Path $Root 'terminal.ps1')))
+    $s = Sign-Text "akn-pc|$Version|$h"
+    if (-not $s) { return $false }
+    [IO.File]::WriteAllText($SigFile, ([ordered]@{ v = $Version; h = $h; s = $s } | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false))
+    $true
+}
+
+$CacaArt = @'
+  ▄█████▄▄      ▄█████▄       ▄█████▄▄      ▄█████▄             ▄██████▄     ███▄     ███   ████
+▄████▀████▄     ███████     ▄████▀████▄     ███████           ▄████▀▀████    █████    ███   ████
+████   ▀▀      ████ ████    ████   ▀▀      ████ ████          ████    ████   ███▀██▄  ███   ████
+████   ▄▄     ████▀ ▀████   ████   ▄▄     ████▀ ▀████         ████    ████   ███ ▀███ ███   ████
+████▄ ▄████  ▄███████████▄  ████▄ ▄████  ▄███████████▄        ████▄  ▄███▀   ███   ▀█████   ████
+ ▀████████   ████▀▀▀▀▀████   ▀████████   ████▀▀▀▀▀████         ▀████████▀    ███    ▀████   ████
+   ▀▀▀▀▀    ▀▀▀▀       ▀▀▀▀    ▀████    ▀▀▀▀       ▀▀▀▀          ▀▀▀▀▀▀      ▀▀▀      ▀▀▀   ▀▀▀▀
+                               ▄▄▄█▀
+'@ -split "`r?`n"
+
+$CapturadoArt = @'
+ ▄█████▄     █████    ███████▄ █████████  ███    ███  ████████▄    █████    ███████▄    ▄█████▄▄
+███▀ ▀██▀   ███▀███   ███  ███    ███     ███    ███  ███   ███   ███▀███   ███  ▀███  ███▀  ▀██▄
+███        ▄██▀ ▀██▄  ███████▀    ███     ███    ███  ███████▀▀  ▄██▀ ▀██▄  ███   ███  ███    ███
+███  ▄██▄  █████████  ███         ███     ███    ███  ███  ███   █████████  ███  ▄███  ███▄  ▄██▀
+ ▀█████▀  ███     ███ ███         ███      ▀██████▀   ███   ▀██▄███     ███ ███████▀    ▀██████▀
+'@ -split "`r?`n"
+
+function Write-CenterLine([string]$text, $color, $bg = 'Black') {
+    Write-Host (' ' * (Center-Pad $text.Length)) -NoNewline -BackgroundColor $bg
+    Write-Host $text -ForegroundColor $color -BackgroundColor $bg
+}
+
+# a tela de alerta. 'local' = este pendrive foi alterado; 'site' = o servidor tem versao sem assinatura
+function Show-CacaOni([string]$motivo) {
+    try { "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')  $motivo" | Out-File -LiteralPath $CacaLog -Append -Encoding utf8 } catch {}
+    Cursor $false
+    $art = $CacaArt; $w = ($art | Measure-Object -Property Length -Maximum).Maximum
+    # sirene: a tela pisca vermelho e preto
+    for ($i = 0; $i -lt 6; $i++) {
+        $bg = 'DarkRed'; $fg = 'White'; if ($i % 2) { $bg = 'Black'; $fg = 'Red' }
+        $Raw.BackgroundColor = $bg; Clear-Host
+        for ($k = 0; $k -lt [math]::Max(1, [int](([Console]::WindowHeight - $art.Count - 6) / 2)); $k++) { Write-Host '' }
+        foreach ($l in $art) { Write-Host (' ' * (Center-Pad $w)) -NoNewline; Write-Host $l.PadRight($w) -ForegroundColor $fg }
+        if ($i % 2) { Play 660,140 } else { Play 990,140 }
+    }
+    $Raw.BackgroundColor = 'Black'; Clear-Host
+    Write-Host ''
+    foreach ($l in $art) { Write-Host (' ' * (Center-Pad $w)) -NoNewline; Write-Host $l -ForegroundColor Red }
+    Write-Host ''
+    if ($motivo -eq 'local') {
+        $cw = ($CapturadoArt | Measure-Object -Property Length -Maximum).Maximum
+        foreach ($l in $CapturadoArt) { Write-Host (' ' * (Center-Pad $cw)) -NoNewline; Write-Host $l -ForegroundColor White }
+        Write-Host ''
+        Write-CenterLine '  !!  ATENÇÃO: VOCÊ FOI CAPTURADO TENTANDO ALTERAR O SISTEMA  !!  ' 'White' 'DarkRed'
+        Write-Host ''
+        Write-CenterLine 'Este AKENETIC foi modificado e a assinatura do criador não confere.' 'Yellow'
+        Write-CenterLine 'O programa foi BLOQUEADO neste pendrive e a tentativa foi registrada.' 'Yellow'
+        Write-Host ''
+        Write-CenterLine "Baixe a versão oficial em $($SiteBase)sobre/" 'Gray'
+    } else {
+        Write-CenterLine '  !!  ATENÇÃO: ARQUIVO ADULTERADO DETECTADO NO SERVIDOR  !!  ' 'White' 'DarkRed'
+        Write-Host ''
+        Write-CenterLine 'A versão nova do site NÃO tem a assinatura do criador.' 'Yellow'
+        Write-CenterLine 'Alguém tentou alterar o AKENETIC. NADA foi instalado: você está protegido.' 'Yellow'
+        Write-Host ''
+        Write-CenterLine "Avise o criador (comando relatorio)." 'Gray'
+    }
+    Write-Host ''
+    Play 220,300,165,500
+    Cursor $true
+}
+
 function Update-Terminal {
-    if ($IsPremium) {
+    if ($IsCreator) {
         Bot "Voce e o dono do AKENETIC: sua versao e a original (v$Version)."
         Write-Host "  Para mandar ela pros amigos use: site publicar" -ForegroundColor DarkGray
         return
@@ -3677,6 +4478,10 @@ function Update-Terminal {
     $errs = $null
     [void][Management.Automation.Language.Parser]::ParseInput($remote.Text, [ref]$null, [ref]$errs)
     if ($errs -or $remote.Text -notmatch 'AKENETIC TERMINAL') { Err 'O arquivo baixado veio com defeito. Nada foi alterado.'; return }
+    # CACA ONI: so instala se a versao do site tiver a assinatura do criador
+    $remoteSig = Get-RemoteSig
+    if ($null -eq $remoteSig) { Err 'Nao consegui baixar a assinatura da versao nova. Tente de novo.'; return }
+    if ((Test-TerminalSig $remote.Bytes $remoteSig) -ne 'ok') { Show-CacaOni 'site'; return }
 
     Box @("Nova versao disponivel: v$($remote.Version)", "Voce tem: v$Version")
     $nov = Get-SiteJson 'novidades.json'
@@ -3686,6 +4491,7 @@ function Update-Terminal {
     try {
         Copy-Item -LiteralPath $mine "$mine.bak" -Force
         [IO.File]::WriteAllBytes($mine, $remote.Bytes)
+        [IO.File]::WriteAllText($SigFile, $remoteSig, (New-Object Text.UTF8Encoding $false))
     } catch { Err "Nao consegui instalar: $($_.Exception.Message)"; return }
     Show-Bar 'Instalando atualizacao' 600
     Bot 'Atualizado! Reiniciando o AKENETIC...'
@@ -3698,9 +4504,13 @@ function Update-Terminal {
 
 function Write-Prompt {
     Write-Host ''
-    $gold = Test-GoldMode; $neon = Test-NeonMode
+    $gold = Test-GoldMode; $neon = Test-NeonMode; $oni = Test-OniMode
     Write-Host '  ┌─[' -NoNewline -ForegroundColor $script:T.S
-    if ($neon) {
+    if ($oni) {
+        Write-Host '▲ ' -NoNewline -ForegroundColor Yellow
+        Write-Host 'AKENETIC ONI' -NoNewline -ForegroundColor Red
+        Write-Host ' ▲' -NoNewline -ForegroundColor Yellow
+    } elseif ($neon) {
         Write-Host '☼ ' -NoNewline -ForegroundColor Cyan
         Write-Host "AKENETIC $GoldName" -NoNewline -ForegroundColor Magenta
         Write-Host ' ☼' -NoNewline -ForegroundColor Cyan
@@ -3714,7 +4524,8 @@ function Write-Prompt {
     Write-Host ']─[' -NoNewline -ForegroundColor $script:T.S
     Write-Host (Get-Date -Format 'HH:mm') -NoNewline -ForegroundColor DarkGray
     Write-Host ']' -ForegroundColor $script:T.S
-    if ($neon) { Write-Host '  └─☼ ' -NoNewline -ForegroundColor Cyan }
+    if ($oni) { Write-Host '  └─▲ ' -NoNewline -ForegroundColor Red }
+    elseif ($neon) { Write-Host '  └─☼ ' -NoNewline -ForegroundColor Cyan }
     elseif ($gold) { Write-Host '  └─♦ ' -NoNewline -ForegroundColor $script:T.P }
     else { Write-Host '  └─» ' -NoNewline -ForegroundColor $script:T.S }
     [Console]::ForegroundColor = 'White'
@@ -3724,8 +4535,40 @@ function Write-Prompt {
 Set-Location "$Drive\"
 Clear-Host
 Cursor $false
+# CACA ONI: o programa confere a propria assinatura antes de abrir
+$script:SigState = 'falso'; try { $script:SigState = Get-LocalSigState } catch {}
+if ($script:SigState -ne 'ok' -and $IsCreator) {
+    # o criador mudou o terminal: assina de novo com a senha mestra. Arquivo de chave falso nao
+    # passa daqui, porque sem a senha certa e tratado como invasor.
+    Box @('CACA ONI: o terminal mudou desde a ultima assinatura.', 'Digite a senha mestra do criador para assinar esta versao.')
+    if (New-TerminalSig) { Bot 'Versao assinada. Bem-vindo, criador.'; $script:SigState = 'ok'; Start-Sleep -Milliseconds 700 }
+    else { $script:SigState = 'falso' }
+}
+if ($script:SigState -eq 'falso') {
+    Show-CacaOni 'local'
+    Write-Host '  Pressione qualquer tecla para fechar.' -ForegroundColor DarkGray
+    [void][Console]::ReadKey($true)
+    exit
+}
+Clear-Host
+if ($IsCreator) {
+    # visual do criador: terminal em tela cheia, transparente, com a mascara e a chuva matrix
+    # rodando atras em loop. A abertura e a propria mascara surgindo no fundo.
+    Enable-OniFont
+    Set-FullScreen
+    [void](Start-OniFundo)
+    # titulo em katakana precisa dos pontinhos (Cascadia) e de espaco na faixa central
+    $script:UseJpTitle = [object]::ReferenceEquals($script:OniLines, $OniBraille) -and [Console]::WindowWidth -ge (($JpTitle | Measure-Object -Property Length -Maximum).Maximum + 2)
+}
 Write-Host ''
-if (Test-NeonMode) {
+if (Test-OniMode) {
+    Type-Out '  Despertando o ONI...' $script:T.P 30
+    Write-Host ''
+    Show-Bar 'Acendendo as brasas' 500
+    Show-Bar 'Afiando as presas' 400
+    Show-Bar 'Verificando o criador' 400
+    Show-Bar 'Afinando os tambores' 300
+} elseif (Test-NeonMode) {
     Type-Out '  Ligando os neons do AKENETIC VIP...' $script:T.P 22
     Write-Host ''
     Show-Bar 'Aquecendo os tubos' 500
@@ -3751,10 +4594,14 @@ Sfx boot
 
 # abertura: nome ondulando no centro da tela
 Clear-Host
-for ($i = 0; $i -lt [math]::Max(0, [int](([Console]::WindowHeight - 14) / 2)); $i++) { Write-Host '' }
+# com o fundo matrix o nome fica no alto, pra nao cobrir a mascara
+$bannerPad = [math]::Max(0, [int](([Console]::WindowHeight - 14) / 2)); if (Test-OniFundo) { $bannerPad = 1 }
+for ($i = 0; $i -lt $bannerPad; $i++) { Write-Host '' }
 Show-Banner -Animated
-if ($IsPremium) { Type-Center '♦  EDICAO PREMIUM  ♦' 'Yellow' 30 }
+if ($IsCreator) { Type-Center '▲  CRIADOR  ▲' $script:T.A 30 } elseif ($IsOperator) { Type-Center "♠  OPERADOR: $($script:OpInfo.n)  ♠" $script:T.A 30 }
 Type-Center 'terminal portatil  ·  leve para qualquer PC' $script:T.A 18
+# versoes antigas (de antes do CACA ONI) ainda nao tem assinatura: o 'atualizar' traz uma assinada
+if ($script:SigState -eq 'sem') { Type-Center "versao sem assinatura do criador  ·  digite 'atualizar'" 'DarkGray' 4 }
 Start-Sleep -Milliseconds 900
 
 # login: sem conta valida o terminal nao abre
@@ -3770,7 +4617,7 @@ Show-Header
 Write-Host ''
 Bot "Ola, $($script:Account.nome)! Bem-vindo ao seu terminal."
 if ((Get-Suspects).Count) { Err "Achei arquivos suspeitos na raiz do pendrive. Digite 'vacina'." }
-if (-not $IsPremium) {
+if (-not $IsCreator) {
     $upd = Get-RemoteTerminal 2500
     if ($upd -and -not (Same-Bytes $upd.Bytes ([IO.File]::ReadAllBytes((Join-Path $Root 'terminal.ps1'))))) {
         Write-Host "  [*] Versao nova do AKENETIC disponivel (v$($upd.Version)). Digite 'atualizar'." -ForegroundColor Yellow
@@ -3780,7 +4627,8 @@ if (-not $IsPremium) {
 Check-Aviso
 Check-Novidades
 Check-VipRevoked
-if ($IsPremium) { Sync-Reports }
+Check-OpRevoked
+if ($IsCreator) { Sync-Reports; Show-Central -Compact }
 if ($script:IsNewAccount) { Show-Tutorial }
 Cursor $true
 
@@ -3810,18 +4658,22 @@ while ($true) {
         '^(ejetar|eject)$'      { Eject; break }
         '^(chat|sala)$'         { Open-ChatRoom; Show-Header; break }
         '^compartilhar$'        { Share $arg; break }
-        '^site$'                { if ($IsPremium) { Site $arg } else { Err 'Comando exclusivo da edicao premium.' }; break }
+        '^site$'                { if ($IsCreator) { Site $arg } else { Err 'Comando exclusivo do criador.' }; break }
+        '^central$'             { if ($IsCreator) { Show-Central } else { Err 'Comando exclusivo do criador.' }; break }
+        '^operador$'            { Operator-Command $arg; break }
+        '^(mascara|máscara)$'   { if ($IsCreator) { Show-OniMask -Animated } else { Err 'Comando exclusivo do criador.' }; break }
+        '^oni$'                 { if ($IsCreator) { Start-OniMatrix $arg } else { Err 'Comando exclusivo do criador.' }; break }
         '^atualizar$'           { Update-Terminal; break }
-        '^aviso$'               { if ($IsPremium) { Aviso $arg } else { Err 'Comando exclusivo da edicao premium.' }; break }
+        '^aviso$'               { if ($IsCreator) { Aviso $arg } else { Err 'Comando exclusivo do criador.' }; break }
         '^backup-premium$'      { if ($IsPremium) { Backup-Premium $arg } else { Err 'Comando exclusivo da edicao premium.' }; break }
         '^restaurar$'           { Restore-Premium $arg; break }
         '^cofre$'               { if ($IsPremium) { Vault $arg } else { Err 'Comando exclusivo da edicao premium.' }; break }
-        '^criador$'             { if ($IsPremium) { Creator $arg } else { Err 'Comando exclusivo da edicao premium.' }; break }
+        '^criador$'             { if ($HasOwnerKey) { Creator $arg } else { Err 'Comando exclusivo do criador.' }; break }
         '^vip$'                 { Vip $arg; break }
         '^conta$'               { Account-Command $arg; break }
         '^tutorial$'            { Show-Tutorial; break }
         '^relatorio$'           { Send-Report $arg; break }
-        '^relatorios$'          { if ($IsPremium) { Show-Reports $arg } else { Err 'So o criador le os relatorios.' }; break }
+        '^relatorios$'          { if ($IsCreator) { Show-Reports $arg } else { Err 'So o criador le os relatorios.' }; break }
         '^pendrive$'            { Show-Pendrive; break }
         '^(ls|dir)$'            { if ($arg) { Run-Cmd $line } else { Show-Files }; break }
         '^cd$' {
@@ -3883,14 +4735,18 @@ while ($true) {
             Cursor $false
             Write-Host ''
             Show-Bar 'Desligando AKENETIC' 500
+            Stop-OniFundo
             Sfx bye
             Clear-Host
-            if (Test-NeonMode) {
+            if (Test-OniMode) {
+                Show-Banner -colors @('DarkRed', 'DarkRed', 'DarkRed', 'DarkRed', 'DarkRed', 'DarkRed')
+                Type-Center '▲  Ate a proxima, criador!  ▲' 'Red' 30
+            } elseif (Test-NeonMode) {
                 Show-Banner -colors @('DarkCyan', 'DarkMagenta', 'DarkCyan', 'DarkMagenta', 'DarkCyan', 'DarkMagenta')
                 Type-Center '☼  Ate a proxima, VIP!  ☼' 'Magenta' 30
             } elseif (Test-GoldMode) {
                 Show-Banner -colors @('DarkYellow', 'DarkYellow', 'DarkYellow', 'DarkYellow', 'DarkRed', 'DarkRed')
-                if ($IsPremium) { Type-Center '♦  Ate a proxima, criador!  ♦' $script:T.P 30 }
+                if ($IsCreator) { Type-Center '♦  Ate a proxima, criador!  ♦' $script:T.P 30 }
                 else { Type-Center '☼  Ate a proxima, VIP!  ☼' $script:T.P 30 }
             } else {
                 Show-Banner -colors @('DarkGray', 'DarkGray', 'DarkGray', 'DarkGray', 'DarkGray', 'DarkGray')

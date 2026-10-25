@@ -1,5 +1,5 @@
 // AKENETIC - service worker: deixa o app abrir sem internet e sempre pega a versao nova quando tem.
-const CACHE = 'akenetic-v2.4';
+const CACHE = 'akenetic-v2.5';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-180.png'];
 
 self.addEventListener('install', e => {

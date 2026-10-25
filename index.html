@@ -608,7 +608,7 @@ const nameColor = n => {
 const hhmm = d => d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 const notice = (t, c = 'DarkGray') => println(['   ** ' + t + ' **', c]);
 // ♦ = criador verificado, ★ = VIP verificado (os dois por assinatura digital do criador)
-const badgeMark = name => { const b = chat && chat.badges[name]; return b === 'creator' ? ['♦ ', 'White'] : b === 'vip' ? ['★ ', 'Yellow'] : ['', 'White']; };
+const badgeMark = name => { const b = chat && chat.badges[name]; return b === 'creator' ? ['♦ ', 'White'] : b === 'op' ? ['♠ ', 'White'] : b === 'vip' ? ['★ ', 'Yellow'] : ['', 'White']; };
 function chatLine(time, name, text, c, fx) {
   const d = println([`[${time}] `, 'DarkGray'], badgeMark(name), [name, c], [' » ', T.S]);
   if (fx === 'brilho') {
@@ -1092,7 +1092,7 @@ async function openChat() {
     if (store.get('cor', '')) chat.colors[name] = store.get('cor', '');
     if (myVip.n.toLowerCase() !== name.toLowerCase()) setTimeout(() => notice(`dica: seu selo ★ só aparece com o apelido "${myVip.n}"`, 'Yellow'), 600);
   }
-  loadVipRevoked();
+  loadVipRevoked(); loadOpRevoked();
   chatHeader();
   notice('conectando...', T.A);
   setMode('chat');
@@ -1320,7 +1320,7 @@ $('#bar').addEventListener('submit', e => { e.preventDefault(); const v = inp.va
 addEventListener('resize', () => { document.querySelectorAll('.banner').forEach(b => b.style.fontSize = bannerSize(b.parentElement)); scroll(true); });
 
 // ------------------------------------------------------------------ inicializacao
-const APP_VERSION = '2.4';
+const APP_VERSION = '2.5';
 
 // ---------------- jogos na sala (mesmas regras do PC)
 const RACE_PHRASES = [
@@ -1539,8 +1539,26 @@ async function verifyVip(token) {
 async function loadVipRevoked() {
   try { const r = await fetch('vip-revogados.json?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) vipRevoked = (await r.json()).map(String); } catch (e) {}
 }
+// operador (versao leve): licenca assinada pelo criador + assinatura da mensagem com a chave dele
+let opRevoked = [];
+const opKeys = {};
+async function loadOpRevoked() {
+  try { const r = await fetch('op-revogados.json?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) opRevoked = (await r.json()).map(String); } catch (e) {}
+}
+async function verifyOperator(lic, name, text, sig) {
+  try {
+    const m = /^AKNOP\.([A-Za-z0-9+/=]+)\.([A-Za-z0-9+/=]+)$/.exec(String(lic || '').trim());
+    if (!m || !await verifyCreator(m[1], m[2])) return false;
+    const j = JSON.parse(dec.decode(unb64(m[1])));
+    if (!j.n || !j.k || opRevoked.includes(String(j.id)) || String(j.n).toLowerCase() !== name.toLowerCase()) return false;
+    if (!opKeys[j.k]) { const raw = new Uint8Array(65); raw[0] = 4; raw.set(unb64(j.k), 1); opKeys[j.k] = await crypto.subtle.importKey('raw', raw, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']); }
+    return await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, opKeys[j.k], unb64(sig), enc.encode(text));
+  } catch (e) { return false; }
+}
 async function badgeOf(p, name) {
-  if (p.cs && await verifyCreator(`${p.i}|${p.n}|${p.t}|${p.m == null ? '' : p.m}`, p.cs)) return 'creator';
+  const signed = `${p.i}|${p.n}|${p.t}|${p.m == null ? '' : p.m}`;
+  if (p.cs && await verifyCreator(signed, p.cs)) return 'creator';
+  if (p.ol && p.os && await verifyOperator(p.ol, name, signed, p.os)) return 'op';
   if (p.v) { const v = await verifyVip(p.v); if (v && String(v.n).toLowerCase() === name.toLowerCase()) return 'vip'; }
   return '';
 }
