@@ -81,6 +81,9 @@
   #login .links { display: flex; justify-content: center; gap: 14px; flex-wrap: wrap; font-size: 12px; }
   #login .links a { color: var(--a); cursor: pointer; text-decoration: underline; }
   #boot .about { color: #767676; font-size: 12px; text-decoration: underline; }
+  .velha { display: grid; grid-template-columns: repeat(3, 52px); gap: 4px; margin: 8px 0 8px 24px; }
+  .velha button { width: 52px; height: 52px; font: 700 24px var(--mono, monospace); background: #151515; border: 1px solid var(--s); border-radius: 6px; cursor: pointer; }
+  .velha button:disabled { cursor: default; opacity: .9; }
   .blink { color: var(--p); animation: blink 1.1s steps(2, start) infinite; letter-spacing: .1em; }
   @keyframes blink { to { visibility: hidden; } }
   .chip.mini { padding: 1px 10px; margin-left: 8px; font-size: 12px; }
@@ -316,7 +319,8 @@ const HELP = [
   ['piada', 'conta uma piada'], ['matrix', 'chuva de código'], ['hack', 'modo hacker de filme'],
   ['musica', 'toca uma musiquinha'], ['tema [nome]', 'verde azul roxo vermelho arcoiris'],
   ['som on|off', 'liga/desliga sons'], ['historico', 'comandos já digitados'], ['instalar', 'instala o app na tela inicial'],
-  ['vip [convite]', 'resgata um convite VIP do criador'], ['conta', 'sua conta: exportar, trocar senha, sair']
+  ['vip [convite]', 'resgata um convite VIP do criador'], ['conta', 'sua conta: exportar, trocar senha, sair'],
+  ['tutorial', 'guia rápido do AKENETIC'], ['relatorio [texto]', 'achou um bug? manda pro criador (cifrado)']
 ];
 const JOKES = [
   'Existem 10 tipos de pessoas: as que entendem binário e as que não entendem.',
@@ -502,6 +506,8 @@ async function runCommand(line) {
       if (soundOn) sfx('ok');
       return bot('Som ' + (soundOn ? 'ligado' : 'desligado') + '.');
     case 'conta': return accountCommand(arg);
+    case 'tutorial': return showTutorial();
+    case 'relatorio': return sendReport(arg);
     case 'vip': {
       if (/^cart[aã]o$/i.test(arg)) return vipCard();
       if (!arg) return bot(myVip ? `Você é VIP: ${myVip.n} ★ (convite de ${myVip.d}). Use: tema neon  |  vip cartao` : 'Ganhou um convite VIP? Cole aqui: vip AKNVIP.xxxx');
@@ -963,6 +969,10 @@ async function handleItem(o) {
   // o historico grava tambem as nossas mensagens (quando o eco volta do servidor)
   const lt = logTextOf(p, name);
   if (lt) await logChat(o.id, ddmm(new Date(o.time * 1000)), lt);
+  // jogos: TODOS (inclusive os nossos, quando o eco volta) sao aplicados na ordem do servidor,
+  // assim todo mundo chega no mesmo resultado. So ao vivo: o historico nao reabre partidas velhas.
+  if (p.t === 'game') { if (chat.live) await handleGame(p, name, o); return; }
+  if (p.t === 'msg' && chat.live) checkRace(name, clean(p.m), o.time);
   if (chat.own.has(String(p.i))) return;
   const live = chat.live, x = p.x;
   chat.people.add(name);
@@ -1042,8 +1052,20 @@ function startListening() {
       c.live = true; notice('conectado! as mensagens são criptografadas', 'Green');
     });
     const es = new EventSource(`https://ntfy.sh/${c.K.topic}/sse?since=${since}`);
-    c.es = es;
-    es.onmessage = e => { try { queueItem(JSON.parse(e.data)); } catch (x) {} };
+    c.es = es; c.lastId = since;
+    es.onmessage = e => { try { const o = JSON.parse(e.data); queueItem(o); if (o.event === 'message') c.lastId = o.id; } catch (x) {} };
+    // recuperacao: o celular costuma pausar a conexao ao vivo (tela apagada, outro app, aba em
+    // segundo plano). A cada 15s e quando o app volta pra tela, busca o que faltou (sem duplicar).
+    const catchUp = async () => {
+      if (chat !== c) return;
+      try {
+        const txt = await (await fetch(`https://ntfy.sh/${c.K.topic}/json?poll=1&since=${c.lastId}`)).text();
+        for (const l of txt.split('\n')) { if (!l.trim()) continue; const o = JSON.parse(l); if (o.event === 'message') { queueItem(o); c.lastId = o.id; } }
+      } catch (x) {}
+    };
+    c.timer = setInterval(catchUp, 15000);
+    c.onVis = () => { if (!document.hidden) catchUp(); };
+    document.addEventListener('visibilitychange', c.onVis);
     es.onerror = () => { if (!c.err) { c.err = true; notice('conexão caiu, reconectando...', 'Red'); } };
     es.onopen = () => { if (c.err) { c.err = false; notice('conexão de volta!', 'Green'); } };
   })();
@@ -1061,7 +1083,7 @@ async function openChat() {
   if (pass.length < 4) return err('A senha precisa de pelo menos 4 caracteres.');
   store.set('nome', name); store.set('sala', room);
   await spin('Gerando chave secreta...', 400);
-  chat = { name, room, K: await deriveKeys(room.toLowerCase(), pass), own: new Set(), seen: new Set(), people: new Set(), logIds: new Set(), typing: {}, lastTyping: 0, badges: {}, colors: {},
+  chat = { name, room, K: await deriveKeys(room.toLowerCase(), pass), own: new Set(), seen: new Set(), people: new Set(), logIds: new Set(), typing: {}, lastTyping: 0, badges: {}, colors: {}, velha: null, velhaEl: null, ppt: {}, myPpt: {}, race: null, score: {},
            sheets: {}, inits: {}, mySheet: loadSheet(), master: '', blobs: {},
            live: false, hadHistory: false, err: false, chain: Promise.resolve(), es: null };
   for (const [id] of loadHist()) chat.logIds.add(id);
@@ -1076,6 +1098,20 @@ async function openChat() {
   setMode('chat');
   startListening();
   if (!await sendChat('join', '', hereExtra())) { notice('não consegui enviar. Tem internet?', 'Red'); sfx('err'); }
+  sendPresence('on'); chat.presTimer = setInterval(() => sendPresence('on'), 600000);
+}
+// presenca anonima (igual ao PC): sem nome e sem codigo de sala, so um hash da sala e um numero
+// aleatorio da sessao. Serve para o criador ver quantas salas estao ativas.
+const PRESENCE_SESSION = [...crypto.getRandomValues(new Uint8Array(4))].map(b => b.toString(16).padStart(2, '0')).join('');
+async function hexOf(text, bytes) {
+  return [...new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(text))).slice(0, bytes)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+async function sendPresence(state) {
+  if (!chat) return;
+  try {
+    const r = await hexOf('akenetic-presenca|' + chat.K.topic, 4), topic = 'akn-presenca-' + await hexOf('akenetic-presenca-v1', 6);
+    await fetch('https://ntfy.sh/' + topic, { method: 'POST', body: JSON.stringify({ r, s: PRESENCE_SESSION, a: state }) });
+  } catch (e) {}
 }
 function chatHeader() {
   out.innerHTML = '';
@@ -1087,13 +1123,16 @@ async function leaveChat() {
   if (rec && rec.state === 'recording') rec.stop();
   notice('saindo da sala...');
   await sendChat('leave');
+  await sendPresence('off');
   if (c.es) c.es.close();
+  clearInterval(c.timer); clearInterval(c.presTimer); document.removeEventListener('visibilitychange', c.onVis);
   chat = null; renderTyping();
   setMode('cmd'); sfx('bye');
   await header(false);
 }
 async function chatHelp() {
   const rows = [['CHAT'], ['/midia', 'foto ou vídeo (câmera/galeria)'], ['/audio', 'grava mensagem de voz'], ['/enviar', 'manda arquivo (ou botão 📎)'], ['/quem', 'pessoas na sala'], ['/limpar  /som', 'limpa / sons'], ['/historico', 'conversas antigas'], ['/avisos', 'liga avisos de mensagem'], ['/sair', 'volta pro terminal'],
+    ['JOGOS'], ['/velha', 'jogo da velha (toque nas casas)'], ['/ppt', 'pedra-papel-tesoura'], ['/digita', 'corrida de digitação'], ['/placar', 'quem está ganhando'],
     ['VIP'], ['/cor rosa', 'cor do seu nome pra todos'], ['/brilho texto', 'mensagem arco-íris'], ['/confete', 'confete na tela de todo mundo'],
     ['RPG'], ['/r 1d20+3', 'rola dados pra todos verem'], ['/ficha', 'cria/edita sua ficha'], ['/fichas', 'ficha de todos'], ['/vida -5  +3', 'dano / cura'],
     ['/iniciativa', 'rola e mostra a ordem (+2 bônus)'], ['/mestre', 'vira o mestre'], ['/narrar txt', 'narração (mestre)'], ['/secreto 1d20', 'rolagem escondida (mestre)']];
@@ -1147,6 +1186,46 @@ async function chatSubmit(text) {
     case '/fichas': return showSheets();
     case '/historico': case '/history': return showHistory(arg);
     case '/avisos': return askNotifications();
+    case '/velha': {
+      const v = chat.velha;
+      if (v && !v.over && v.o) return notice(`já tem partida rolando (${v.x} x ${v.o}). /placar mostra o placar`, 'Yellow');
+      await sendChat('game', '', { g: 'velha', a: 'convite', id: newGameId() });
+      return notice('desafio enviado! esperando alguém aceitar...', T.A);
+    }
+    case '/aceitar': {
+      const v = chat.velha;
+      if (!v || v.over || v.o) return notice('nenhum desafio aberto. Crie um com /velha', 'Yellow');
+      if (v.x === me) return notice('você não pode aceitar o próprio desafio :)', 'Yellow');
+      return sendChat('game', '', { g: 'velha', a: 'aceito', id: v.id });
+    }
+    case '/jogar': case '/v': {
+      const v = chat.velha;
+      if (!v || v.over || !v.o) return notice('nenhuma partida rolando. /velha cria uma', 'Yellow');
+      const who = v.turn === 'O' ? v.o : v.x;
+      if (who !== me) return notice(`não é sua vez (vez de ${who})`, 'Yellow');
+      if (!/^[1-9]$/.test(arg) || v.b[+arg - 1]) return notice('escolha uma casa livre', 'Yellow');
+      return sendChat('game', '', { g: 'velha', a: 'jogada', id: v.id, c: +arg });
+    }
+    case '/desistir': {
+      const v = chat.velha;
+      if (!v || v.over || !v.o || (me !== v.x && me !== v.o)) return notice('você não está numa partida', 'Yellow');
+      return sendChat('game', '', { g: 'velha', a: 'desiste', id: v.id });
+    }
+    case '/ppt': {
+      const e = pptChoice(arg);
+      if (!e) return pptButtons('escolha a sua jogada:');
+      if (Object.values(chat.ppt).some(r => !r.done && r.c[me])) return notice('você já jogou, espere o adversário', 'Yellow');
+      const open = Object.values(chat.ppt).find(r => !r.done && Object.keys(r.c).length === 1);
+      const id = open ? open.id : newGameId();
+      const salt = [...crypto.getRandomValues(new Uint8Array(8))].map(b => b.toString(16).padStart(2, '0')).join('');
+      chat.myPpt[id] = { e, s: salt };
+      await sendChat('game', '', { g: 'ppt', a: 'aposta', id, h: await pptHash(e, salt, id) });
+      return notice(`você jogou ${e.toUpperCase()} (fica escondido até o adversário jogar)`, T.A);
+    }
+    case '/digita':
+      if (chat.race && !chat.race.winner) return notice('já tem uma corrida valendo! copie a frase', 'Yellow');
+      return sendChat('game', '', { g: 'digita', a: 'frase', id: newGameId(), f: pick(RACE_PHRASES) });
+    case '/placar': return showScore();
     case '/cor': case '/brilho': case '/confete': {
       if (!myVip) return notice('exclusivo para VIP (ganhou um convite? vip <convite>)', 'Yellow');
       if (cmd === '/cor') {
@@ -1189,7 +1268,8 @@ async function chatSubmit(text) {
 // ------------------------------------------------------------------ entrada, botoes e modos
 let mode = 'cmd', busy = false, pending = null, pendingSecret = false, installEvt = null;
 const CMD_CHIPS = ['ajuda', 'chat', 'matrix', 'hack', 'musica', 'dado', 'piada', 'senha', 'sistema', 'tema', 'notas', 'limpar'];
-const CHAT_CHIPS = [['📷 foto/vídeo', '/midia'], ['🎤 áudio', '/audio'], ['📎 arquivo', '/enviar'], ['🎲 d20', '/r 1d20'], '/fichas', '/ficha',
+const CHAT_CHIPS = [['📷 foto/vídeo', '/midia'], ['🎤 áudio', '/audio'], ['📎 arquivo', '/enviar'], ['❌⭕ velha', '/velha'], ['✊ ppt', '/ppt'],
+  ['⌨ corrida', '/digita'], ['🏆 placar', '/placar'], ['🎲 d20', '/r 1d20'], '/fichas', '/ficha',
   '/iniciativa', '/historico', ['🔔 avisos', '/avisos'], '/ajuda', '/quem', '/sair'];
 const cmdChips = () => installEvt ? [['📲 instalar', 'instalar'], ...CMD_CHIPS] : CMD_CHIPS;
 
@@ -1240,7 +1320,198 @@ $('#bar').addEventListener('submit', e => { e.preventDefault(); const v = inp.va
 addEventListener('resize', () => { document.querySelectorAll('.banner').forEach(b => b.style.fontSize = bannerSize(b.parentElement)); scroll(true); });
 
 // ------------------------------------------------------------------ inicializacao
-const APP_VERSION = '2.2';
+const APP_VERSION = '2.4';
+
+// ---------------- jogos na sala (mesmas regras do PC)
+const RACE_PHRASES = [
+  'o rato roeu a roupa do rei de roma', 'tres pratos de trigo para tres tigres tristes', 'o terminal de bolso nunca dorme',
+  'quem com ferro fere com ferro sera ferido', 'a aranha arranha a ra a ra arranha a aranha', 'o mestre rolou um dado e saiu critico',
+  'pendrive na mao e chat criptografado no bolso', 'nem tudo que reluz e ouro mas o tema neon brilha',
+  'um dragao dorme em cima de uma montanha de moedas', 'digitar rapido e uma arte que poucos dominam'
+];
+const newGameId = () => [...crypto.getRandomValues(new Uint8Array(3))].map(b => b.toString(16).padStart(2, '0')).join('');
+function addWin(who, game) {
+  chat.score[who] = (chat.score[who] || 0) + 1;
+  println(['   ** ' + who + ` venceu (${game})! **`, 'Yellow']);
+  if (who === chat.name) { play([523, 80, 659, 80, 784, 80, 1047, 220]); buzz([60, 40, 120]); } else play([784, 80, 523, 160]);
+}
+function showScore() {
+  println(['══ PLACAR DA SALA ══════════', T.S]);
+  const list = Object.entries(chat.score).sort((a, b) => b[1] - a[1]);
+  if (!list.length) return println(['ninguém venceu nada ainda. /velha /ppt /digita', 'DarkGray']);
+  list.forEach(([n, v], i) => println([(['🥇', '🥈', '🥉'][i] || '  ') + ' ', 'White'], [n.padEnd(16), nameColor(n)], [`${v} vitória(s)`, T.T]));
+}
+async function handleGame(p, name, o) {
+  const x = p.x; if (!x) return;
+  if (x.g === 'velha') return handleVelha(x, name);
+  if (x.g === 'ppt') return handlePpt(x, name);
+  if (x.g === 'digita') return handleRace(x, name, o);
+}
+// --- jogo da velha: no celular o tabuleiro e de botoes (toque na casa para jogar)
+function velhaWinner(b) {
+  for (const [a, c, d] of [[0, 1, 2], [3, 4, 5], [6, 7, 8], [0, 3, 6], [1, 4, 7], [2, 5, 8], [0, 4, 8], [2, 4, 6]]) if (b[a] && b[a] === b[c] && b[c] === b[d]) return b[a];
+  return b.every(Boolean) ? 'empate' : null;
+}
+function showVelha() {
+  const v = chat.velha;
+  if (chat.velhaEl) chat.velhaEl.querySelectorAll('button').forEach(b => b.disabled = true);
+  const g = el('div', 'velha');
+  v.b.forEach((s, i) => {
+    const b = el('button', null, s || String(i + 1)); b.type = 'button';
+    b.style.color = s === 'X' ? C.Cyan : s === 'O' ? C.Magenta : '#444';
+    b.disabled = !!s || v.over;
+    b.onclick = () => submit('/jogar ' + (i + 1));
+    g.appendChild(b);
+  });
+  out.appendChild(g); chat.velhaEl = g; scroll(true);
+}
+function velhaTurn() {
+  const v = chat.velha, who = v.turn === 'O' ? v.o : v.x;
+  println(['   vez de ', 'DarkGray'], [`${who} (${v.turn})`, v.turn === 'O' ? 'Magenta' : 'Cyan'], [who === chat.name ? '  ← toque numa casa' : '', 'DarkGray']);
+  if (who === chat.name) { tone(1319, 60); buzz(40); }
+}
+function handleVelha(x, name) {
+  const v = chat.velha;
+  if (x.a === 'convite') {
+    if (v && !v.over && v.o) return;
+    chat.velha = { id: String(x.id), x: name, o: null, b: ['', '', '', '', '', '', '', '', ''], turn: 'X', over: false };
+    const d = notice(`${name} desafiou a sala pro JOGO DA VELHA!`, 'Cyan');
+    if (name !== chat.name) { const b = el('button', 'chip mini', '✓ aceitar'); b.type = 'button'; b.onclick = () => submit('/aceitar'); d.appendChild(b); }
+    play([659, 70, 880, 110]);
+  } else if (x.a === 'aceito') {
+    if (!v || v.id !== String(x.id) || v.o || v.x === name || v.over) return;
+    v.o = name; notice(`${name} aceitou!  ${v.x} (X)  contra  ${name} (O)`, 'Cyan');
+    showVelha(); velhaTurn();
+  } else if (x.a === 'jogada') {
+    if (!v || v.id !== String(x.id) || v.over || !v.o) return;
+    const who = v.turn === 'O' ? v.o : v.x, c = toInt(x.c) - 1;
+    if (name !== who || c < 0 || c > 8 || v.b[c]) return;
+    v.b[c] = v.turn; tone(1047, 30);
+    const w = velhaWinner(v.b);
+    if (w) v.over = true;
+    showVelha();
+    if (w === 'empate') { notice('deu velha! empate', 'Yellow'); play([440, 120, 440, 120]); }
+    else if (w) addWin(w === 'O' ? v.o : v.x, 'jogo da velha');
+    else { v.turn = v.turn === 'X' ? 'O' : 'X'; velhaTurn(); }
+  } else if (x.a === 'desiste') {
+    if (!v || v.id !== String(x.id) || v.over || !v.o || (name !== v.x && name !== v.o)) return;
+    v.over = true; notice(name + ' desistiu');
+    if (chat.velhaEl) chat.velhaEl.querySelectorAll('button').forEach(b => b.disabled = true);
+    addWin(name === v.x ? v.o : v.x, 'jogo da velha');
+  }
+}
+// --- pedra-papel-tesoura (compromisso + revelacao: ninguem ve a jogada do outro antes da hora)
+const pptChoice = s => { s = (s || '').toLowerCase().trim(); return /^pe/.test(s) ? 'pedra' : /^pa/.test(s) ? 'papel' : /^t/.test(s) ? 'tesoura' : null; };
+async function pptHash(e, salt, id) { return [...new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(`${e}|${salt}|${id}`)))].map(b => b.toString(16).padStart(2, '0')).join(''); }
+const PPT_ICON = { pedra: '✊', papel: '✋', tesoura: '✌' };
+function pptButtons(label) {
+  const d = notice(label, 'Cyan');
+  for (const e of ['pedra', 'papel', 'tesoura']) { const b = el('button', 'chip mini', `${PPT_ICON[e]} ${e}`); b.type = 'button'; b.onclick = () => { d.querySelectorAll('button').forEach(z => z.disabled = true); submit('/ppt ' + e); }; d.appendChild(b); }
+}
+async function handlePpt(x, name) {
+  const id = String(x.id);
+  if (x.a === 'aposta') {
+    const r = chat.ppt[id] || (chat.ppt[id] = { id, c: {}, rv: {}, done: false, sent: false });
+    if (r.done || Object.keys(r.c).length >= 2 || r.c[name]) return;
+    r.c[name] = String(x.h);
+    const n = Object.keys(r.c).length;
+    if (n === 1 && name !== chat.name) { pptButtons(`${name} jogou PEDRA-PAPEL-TESOURA! responda:`); play([659, 70, 880, 110]); }
+    if (n === 2) {
+      notice(`${Object.keys(r.c).join(' x ')}: jo... ken... pô!`, T.A);
+      const mine = chat.myPpt[id];
+      if (mine && r.c[chat.name] && !r.sent) { r.sent = true; await sendChat('game', '', { g: 'ppt', a: 'revela', id, e: mine.e, s: mine.s }); }
+    }
+  } else if (x.a === 'revela') {
+    const r = chat.ppt[id];
+    if (!r || r.done || !r.c[name] || r.rv[name]) return;
+    const e = pptChoice(x.e);
+    if (!e || await pptHash(e, String(x.s), id) !== r.c[name]) return notice(`${name} tentou trocar a jogada! (anulada)`, 'Red');
+    r.rv[name] = e;
+    const names = Object.keys(r.rv);
+    if (names.length === 2) {
+      r.done = true;
+      const [a, b] = names, ea = r.rv[a], eb = r.rv[b];
+      println(['   ', 'White'], [a + ': ', nameColor(a)], [`${PPT_ICON[ea]} ${ea.toUpperCase()}`, 'White'], ['   x   ', 'DarkGray'], [b + ': ', nameColor(b)], [`${PPT_ICON[eb]} ${eb.toUpperCase()}`, 'White']);
+      const beats = { pedra: 'tesoura', tesoura: 'papel', papel: 'pedra' };
+      if (ea === eb) { notice('empate!', 'Yellow'); play([440, 120, 440, 120]); }
+      else addWin(beats[ea] === eb ? a : b, 'pedra-papel-tesoura');
+    }
+  }
+}
+// --- corrida de digitacao (vencedor decidido pela ordem do servidor, igual pra todos)
+const raceNorm = s => String(s).toLowerCase().replace(/[^\p{L}\p{N} ]/gu, '').replace(/\s+/g, ' ').trim();
+function handleRace(x, name, o) {
+  if (x.a !== 'frase') return;
+  const f = cut(x.f, 120); if (!f) return;
+  chat.race = { id: String(x.id), f, t0: o.time, winner: null };
+  const b = box([`CORRIDA DE DIGITAÇÃO (por ${name})`, 'Digite EXATAMENTE a frase abaixo e envie:', f]);
+  b.style.borderColor = C.Yellow; b.lastChild.style.color = C.Yellow; b.lastChild.style.fontWeight = '700';
+  play([880, 90, 0, 60, 880, 90, 0, 60, 1760, 200]); buzz([60, 60, 60, 60, 200]);
+  if (mode === 'chat') setTimeout(() => inp.focus(), 50);
+}
+function checkRace(name, text, time) {
+  const r = chat.race;
+  if (!r || r.winner || raceNorm(text) !== raceNorm(r.f)) return;
+  r.winner = name;
+  notice(`${name} copiou a frase em ${Math.max(1, time - r.t0)}s!`, 'Yellow');
+  addWin(name, 'corrida de digitação');
+}
+
+// ---------------- tutorial (aparece sozinho depois de criar a conta)
+async function showTutorial() {
+  const pages = [
+    ['BEM-VINDO AO AKENETIC (1/5)', 'Seu terminal de bolso: chat criptografado, RPG, jogos, fotos e áudios — no celular e no PC, com a mesma conta.'],
+    ['O BÁSICO (2/5)', 'Use os botões de baixo ou digite comandos. "ajuda" mostra tudo. "tema azul" muda as cores. "instalar" põe o app na tela inicial.'],
+    ['CHAT COM AMIGOS (3/5)', 'Toque em "chat" e combine um código de sala e uma senha com seu amigo. Só quem sabe a senha lê as mensagens.'],
+    ['JOGOS E RPG (4/5)', 'Dentro do chat: ❌⭕ jogo da velha, ✊ pedra-papel-tesoura, ⌨ corrida de digitação, 🏆 placar e 🎲 dados de RPG.'],
+    ['PRONTO! (5/5)', 'Achou um bug? "relatorio" manda direto pro criador. "tutorial" mostra este guia de novo. Divirta-se!']
+  ];
+  for (let i = 0; i < pages.length; i++) {
+    const b = box(pages[i]); b.firstChild.style.color = col(T.P); b.firstChild.style.fontWeight = '700';
+    const nx = el('button', 'chip', i < pages.length - 1 ? 'próximo ▶' : 'bora! ✓'); nx.type = 'button';
+    const sk = el('button', 'chip mini', 'pular'); sk.type = 'button';
+    const row = el('div'); row.style.marginTop = '8px'; row.append(nx, sk); b.appendChild(row); scroll(true);
+    const r = await new Promise(res => { nx.onclick = () => res('n'); sk.onclick = () => res('s'); });
+    row.remove(); tone(2200, 10);
+    if (r === 's') break;
+  }
+  bot('Bora! Toque em "chat" pra chamar um amigo.');
+}
+
+// ---------------- relatorio de bug (cifrado com a chave publica do criador: so ele le)
+// ECDH P-256 com chave efemera -> SHA-256 -> AES + HMAC (o mesmo formato do terminal do PC)
+let lastErr = '', lastReport = 0;
+addEventListener('error', e => { lastErr = String(e.message || '').slice(0, 300); });
+async function reportTopic() {
+  const h = new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode('akenetic-relatorio|' + CREATOR_PUB)));
+  return 'akn-rel-' + [...h.slice(0, 12)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+async function sendReport(text) {
+  if (!CREATOR_PUB) return err('Este app ainda não conhece o criador. Feche e abra de novo mais tarde.');
+  if (Date.now() - lastReport < 120000) return err('Espere 2 minutos entre um relatório e outro.');
+  if (!text) text = clean(await ask('Conte o que aconteceu (o que fez, o que apareceu)'));
+  if (text.length < 5) return err('Escreva um pouco mais sobre o problema.');
+  await spin('Cifrando o relatório para o criador...', 400);
+  try {
+    const raw = new Uint8Array(65); raw[0] = 4; raw.set(unb64(CREATOR_PUB), 1);
+    const pub = await crypto.subtle.importKey('raw', raw, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+    const eph = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']);
+    const z = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: pub }, eph.privateKey, 256));
+    const km = new Uint8Array(await crypto.subtle.digest('SHA-256', z));
+    const kd = async n => new Uint8Array(await crypto.subtle.digest('SHA-256', concat(km, new Uint8Array([n]))));
+    const K = { encKey: await crypto.subtle.importKey('raw', await kd(1), { name: 'AES-CBC' }, false, ['encrypt']),
+                macKey: await crypto.subtle.importKey('raw', await kd(2), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']) };
+    const ua = (navigator.userAgent.match(/\(([^)]+)\)/) || [])[1] || '';
+    const info = { texto: text.slice(0, 800), versao: APP_VERSION, conta: account ? account.nome : '', plataforma: 'Celular - ' + ua,
+                   data: new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }), erro: lastErr };
+    const d = await protectBytes(K, enc.encode(JSON.stringify(info)));
+    const ephRaw = new Uint8Array(await crypto.subtle.exportKey('raw', eph.publicKey));
+    const r = await fetch('https://ntfy.sh/' + await reportTopic(), { method: 'POST', body: JSON.stringify({ e: b64(ephRaw.slice(1)), d: b64(d) }) });
+    if (!r.ok) throw new Error('servidor respondeu ' + r.status);
+  } catch (e) { return err('Não consegui enviar: ' + e.message); }
+  lastReport = Date.now(); sfx('ok');
+  bot('Relatório enviado! Só o criador consegue ler. Valeu por ajudar :)');
+}
 
 // ---------------- selo do criador e convites VIP (assinatura ECDSA P-256 do criador)
 // a chave publica e gravada aqui pelo 'criador criar' do AKENETIC premium
@@ -1385,7 +1656,7 @@ function renderLogin(message = '', color = 'Red') {
       if (rec && !confirm(`Já existe a conta "${rec.nome}" neste aparelho. Substituir?`)) return;
       const r = await makeAccountRec(nome, p1.value);
       store.set('conta', JSON.stringify(r));
-      loggedIn({ nome, criada: new Date().toISOString().slice(0, 10) });
+      loggedIn({ nome, criada: new Date().toISOString().slice(0, 10) }, true);
     }));
     enterGoes([nm, p1, p2], go);
     box.appendChild(msg);
@@ -1418,8 +1689,9 @@ function renderLogin(message = '', color = 'Red') {
   }
 }
 
-function loggedIn(a) {
-  account = a;
+let isNewAccount = false;
+function loggedIn(a, isNew) {
+  account = a; isNewAccount = !!isNew;
   store.set('nome', a.nome);
   play([1047, 60, 1319, 60, 1568, 120]); buzz(40);
   $('#boot').remove();
@@ -1486,6 +1758,7 @@ async function startApp() {
   await restoreVip();
   if (!await checkNovidades() && prevVersion && prevVersion !== APP_VERSION) bot(`Atualizado para a v${APP_VERSION}!`);
   checkAviso();
+  if (isNewAccount) showTutorial();
 }
 </script>
 </body>

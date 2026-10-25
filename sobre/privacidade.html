@@ -24,7 +24,7 @@
 <main>
   <a class="back" href="./">&larr; voltar ao AKENETIC</a>
   <h1>Política de Privacidade</h1>
-  <p class="upd">Última atualização: 25 de outubro de 2026</p>
+  <p class="upd">Última atualização: 25 de outubro de 2026 (v2.4: sinal de presença anônimo e relatórios de bug)</p>
 
   <p class="tldr"><strong>Resumo:</strong> o AKENETIC não tem servidor próprio, não pede e-mail nem telefone, não usa anúncios, rastreadores ou cookies de terceiros, e não consegue ler suas conversas. O que existe da sua conta fica no seu aparelho.</p>
 
@@ -44,6 +44,12 @@
 
   <h2>4. Como o chat funciona</h2>
   <p>Mensagens, fotos, vídeos e áudios são cifrados (AES-256 + HMAC) no seu aparelho, com uma chave criada a partir do código e da senha da sala, antes de saírem. Eles são entregues por um serviço de terceiros, o <strong>ntfy.sh</strong>, que recebe apenas o conteúdo já embaralhado e o guarda temporariamente (mensagens por cerca de 12 horas e arquivos por cerca de 3 horas). Como qualquer serviço na internet, o ntfy.sh pode registrar dados técnicos, como o endereço IP, conforme a política de privacidade dele. O criador do AKENETIC não tem acesso ao conteúdo das conversas.</p>
+
+  <h2>4a. Sinal de presença (anônimo)</h2>
+  <p>Enquanto você está numa sala, o app manda, ao entrar e a cada 10 minutos, um pequeno sinal público pelo ntfy.sh com apenas dois dados: um código embaralhado da sala (que não permite descobrir o nome nem a senha dela) e um número aleatório que muda a cada vez que você abre o app. Não vai nome, apelido, conta nem conteúdo. Isso serve só para mostrar quantas salas e pessoas estão online no momento.</p>
+
+  <h2>4b. Relatórios de bug</h2>
+  <p>Se você usar o comando <code>relatorio</code>, o texto que você escrever, a versão do app, o seu apelido, o tipo de aparelho e a última mensagem de erro são enviados cifrados para o criador — só ele consegue ler. Nada é enviado sem você usar o comando.</p>
 
   <h2>5. Serviços de terceiros</h2>
   <ul>

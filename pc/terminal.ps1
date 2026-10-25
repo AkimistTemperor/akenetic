@@ -20,7 +20,7 @@ $NotesFile  = Join-Path $Root 'notas.txt'
 $ConfigFile = Join-Path $Root 'config.txt'
 # a edicao premium e liberada pelo arquivo premium.key, que o 'compartilhar' nunca copia
 $IsPremium  = Test-Path -LiteralPath (Join-Path $Root 'premium.key')
-$Version    = '2.2'
+$Version    = '2.4'
 # de onde o comando 'atualizar' baixa a versao nova (publicada pelo 'site publicar' do premium)
 $SiteBase   = 'https://akimisttemperor.github.io/akenetic/'
 $UpdateBase = "$($SiteBase)pc/"
@@ -93,6 +93,7 @@ $script:ChatRoom  = ''
 $script:AvisoSeen = ''
 $script:NovSeen   = ''
 $script:MyColor   = ''
+$script:Particles = $true
 $proConfigured    = $false
 if (Test-Path $ConfigFile) {
     foreach ($l in Get-Content $ConfigFile -Encoding UTF8) {
@@ -103,6 +104,7 @@ if (Test-Path $ConfigFile) {
         if ($l -match '^aviso=(.+)$') { $script:AvisoSeen = $Matches[1] }
         if ($l -match '^novidades=(.+)$') { $script:NovSeen = $Matches[1] }
         if ($l -match '^cor=(\w+)$') { $script:MyColor = $Matches[1] }
+        if ($l -eq 'efeitos=off') { $script:Particles = $false }
         if ($l -eq 'pro=1') { $proConfigured = $true }
     }
 }
@@ -117,7 +119,8 @@ function Save-Config {
       "sala=$script:ChatRoom",
       "aviso=$script:AvisoSeen",
       "novidades=$script:NovSeen",
-      "cor=$script:MyColor")
+      "cor=$script:MyColor",
+      "efeitos=$(if ($script:Particles) {'on'} else {'off'})")
     if ($IsPremium) { $lines += 'pro=1' }
     $lines | Set-Content $ConfigFile -Encoding UTF8
 }
@@ -469,6 +472,8 @@ $Commands = [ordered]@{
     'restaurar [arq]'  = 'recupera um backup .aknbak neste pendrive'
     'vip [convite]'    = 'resgata um convite VIP (tema ouro + selo no chat)'
     'conta'            = 'sua conta: exportar pro celular, trocar senha'
+    'tutorial'         = 'guia rapido do AKENETIC'
+    'relatorio [texto]'= 'achou um bug? manda pro criador (cifrado)'
     'sair'             = 'fecha o terminal'
 }
 if ($IsPremium) {
@@ -482,6 +487,10 @@ if ($IsPremium) {
     $Commands.Insert($Commands.Count - 1, 'site testar', '[PREMIUM] abre o app no PC antes de publicar')
     $Commands.Insert($Commands.Count - 1, 'site voltar', '[PREMIUM] desfaz uma publicacao com problema')
     $Commands.Insert($Commands.Count - 1, 'cofre', '[PREMIUM] cofre de senhas (cofre ajuda)')
+    $Commands.Insert($Commands.Count - 1, 'salas', '[PREMIUM] quantas salas e pessoas estao online agora')
+    $Commands.Insert($Commands.Count - 1, 'fogos', '[PREMIUM] show de fogos de artificio')
+    $Commands.Insert($Commands.Count - 1, 'musica [n]', '[PREMIUM] player com 6 musicas e equalizador')
+    $Commands.Insert($Commands.Count - 1, 'efeitos on|off', '[PREMIUM] particulas pela tela do terminal')
     $Commands.Insert($Commands.Count - 1, 'criador [criar]', '[PREMIUM] sua chave de criador (selo verificado)')
     $Commands.Insert($Commands.Count - 1, 'vip criar <nome>', '[PREMIUM] gera um convite VIP assinado')
     $Commands.Insert($Commands.Count - 1, 'vip lista | revogar <n>', '[PREMIUM] convites feitos / cancela um')
@@ -1404,6 +1413,10 @@ function Handle-ChatItem([string]$raw) {
         'leave' { "** $name saiu **" }
     }
     if ($logText) { Log-Chat $o.id ([DateTimeOffset]::FromUnixTimeSeconds([long]$o.time).LocalDateTime.ToString('dd/MM HH:mm')) $logText }
+    # jogos: TODOS (inclusive os nossos, quando o eco volta) sao aplicados na ordem do servidor,
+    # assim todo mundo chega no mesmo resultado. So ao vivo: o historico nao reabre partidas velhas.
+    if ([string]$p.t -eq 'game') { if ($script:ChatLive) { Handle-Game $p $name $o }; return }
+    if ([string]$p.t -eq 'msg' -and $script:ChatLive) { Check-RaceAnswer $name (Clean ([string]$p.m)) ([long]$o.time) }
     if ($script:ChatOwnIds.Contains([string]$p.i)) { return }
     $live = $script:ChatLive
 
@@ -1534,6 +1547,11 @@ function Chat-Help {
         @('/mestre', 'vira o mestre da sala'),
         @('/narrar <texto>', 'narracao em destaque (mestre)'),
         @('/anuncio <texto>', 'anuncio dourado verificado (so o criador)'),
+        @('JOGOS', ''),
+        @('/velha', 'desafia a sala pro jogo da velha (/aceitar, /jogar 1-9)'),
+        @('/ppt pedra', 'pedra-papel-tesoura (jogada escondida ate os dois jogarem)'),
+        @('/digita', 'corrida de digitacao: quem copiar a frase primeiro'),
+        @('/placar  /desistir', 'quem esta ganhando / desiste da velha'),
         @('VIP', ''),
         @('/cor <nome>', 'cor do seu nome: rosa ciano verde amarelo...'),
         @('/brilho <texto>', 'mensagem colorida pra todos'),
@@ -1615,6 +1633,53 @@ function Chat-Command([string]$text) {
             Write-ChatNotice 'voce agora e o MESTRE da sala' Yellow
             [void](Send-Chat 'master'); break
         }
+        '^/velha$' {
+            $v = $script:Velha
+            if ($v -and -not $v.over -and $v.o) { Write-ChatNotice "ja tem partida rolando ($($v.x) x $($v.o)). /placar mostra o placar" Yellow; break }
+            [void](Send-Chat 'game' '' @{ g = 'velha'; a = 'convite'; id = (New-GameId) })
+            Write-ChatNotice 'desafio enviado! esperando alguem /aceitar...' $script:T.A
+            break
+        }
+        '^/aceitar$' {
+            $v = $script:Velha
+            if (-not $v -or $v.over -or $v.o) { Write-ChatNotice 'nenhum desafio aberto. Crie um com /velha' Yellow; break }
+            if ($v.x -eq $me) { Write-ChatNotice 'voce nao pode aceitar o proprio desafio :)' Yellow; break }
+            [void](Send-Chat 'game' '' @{ g = 'velha'; a = 'aceito'; id = $v.id })
+            break
+        }
+        '^/(jogar|v)$' {
+            $v = $script:Velha
+            if (-not $v -or $v.over -or -not $v.o) { Write-ChatNotice 'nenhuma partida rolando. /velha cria uma' Yellow; break }
+            $who = $v.x; if ($v.turn -eq 'O') { $who = $v.o }
+            if ($who -ne $me) { Write-ChatNotice "nao e sua vez (vez de $who)" Yellow; break }
+            if ($arg -notmatch '^[1-9]$' -or $v.b[[int]$arg - 1]) { Write-ChatNotice 'escolha uma casa livre de 1 a 9' Yellow; break }
+            [void](Send-Chat 'game' '' @{ g = 'velha'; a = 'jogada'; id = $v.id; c = [int]$arg })
+            break
+        }
+        '^/desistir$' {
+            $v = $script:Velha
+            if (-not $v -or $v.over -or -not $v.o -or ($me -ne $v.x -and $me -ne $v.o)) { Write-ChatNotice 'voce nao esta numa partida' Yellow; break }
+            [void](Send-Chat 'game' '' @{ g = 'velha'; a = 'desiste'; id = $v.id })
+            break
+        }
+        '^/ppt$' {
+            $e = Get-PptChoice $arg
+            if (-not $e) { Write-ChatNotice 'use: /ppt pedra   |   /ppt papel   |   /ppt tesoura' Yellow; break }
+            if (@($script:PptRounds.Values | Where-Object { -not $_.done -and $_.c.ContainsKey($me) }).Count) { Write-ChatNotice 'voce ja jogou, espere o adversario' Yellow; break }
+            $open = @($script:PptRounds.Values | Where-Object { -not $_.done -and $_.c.Count -eq 1 } | Select-Object -First 1)
+            $id = New-GameId; if ($open.Count) { $id = $open[0].id }
+            $salt = -join ((1..16) | ForEach-Object { '{0:x}' -f $Rnd.Next(16) })
+            $script:MyPpt[$id] = @{ e = $e; s = $salt }
+            [void](Send-Chat 'game' '' @{ g = 'ppt'; a = 'aposta'; id = $id; h = (Get-PptHash $e $salt $id) })
+            Write-ChatNotice "voce jogou $($e.ToUpper()) (fica escondido ate o adversario jogar)" $script:T.A
+            break
+        }
+        '^/digita$' {
+            if ($script:Race -and -not $script:Race.winner) { Write-ChatNotice 'ja tem uma corrida valendo! copie a frase' Yellow; break }
+            [void](Send-Chat 'game' '' @{ g = 'digita'; a = 'frase'; id = (New-GameId); f = ($RacePhrases | Get-Random) })
+            break
+        }
+        '^/placar$' { Show-Score; break }
         '^/(cor|brilho|confete)$' {
             if (-not ($script:VipToken -or $script:CreatorSigner)) { Write-ChatNotice 'exclusivo para VIP (ganhou um convite? vip <convite>)' Yellow; break }
             $what = $Matches[1]
@@ -1729,6 +1794,7 @@ function Open-ChatRoom {
     if ($script:CreatorSigner) { $script:Badges[$name] = 'creator' } elseif ($script:VipToken) { $script:Badges[$name] = 'vip' }
     $script:NameColors = @{}
     if ($script:MyColor -and ($script:CreatorSigner -or $script:VipToken)) { $script:NameColors[$name] = $script:MyColor }
+    $script:Velha = $null; $script:PptRounds = @{}; $script:MyPpt = @{}; $script:Race = $null; $script:Score = @{}
     Open-ChatLog
 
     $queue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[string]'
@@ -1740,6 +1806,7 @@ function Open-ChatRoom {
     Chat-Header
     Write-ChatNotice 'conectando...' $script:T.A
     if (-not (Send-Chat 'join' '' (Here-Extra))) { Write-ChatNotice 'nao consegui enviar. Tem internet?' Red; Sfx err }
+    Send-Presence 'on'; $script:NextPresence = (Get-Date).AddMinutes(10)
     while ([Console]::KeyAvailable) { [void][Console]::ReadKey($true) }
     Draw-Input
 
@@ -1753,6 +1820,7 @@ function Open-ChatRoom {
         if (-not [Console]::KeyAvailable) {
             # some com o "digitando..." quando expira
             if ((Get-TypingNames).Count -ne $script:TypingShown) { Draw-Input }
+            if ((Get-Date) -ge $script:NextPresence) { Send-Presence 'on'; $script:NextPresence = (Get-Date).AddMinutes(10) }
             Start-Sleep -Milliseconds 30; continue
         }
 
@@ -1782,6 +1850,7 @@ function Open-ChatRoom {
     if ($script:NotifyIcon) { $script:NotifyIcon.Dispose(); $script:NotifyIcon = $null }
     if ($script:TypingPs) { try { $script:TypingPs.Dispose() } catch {}; $script:TypingPs = $null }
     [void](Send-Chat 'leave')
+    Send-Presence 'off'
     $state.Stop = $true
     try { if ($state.Req) { $state.Req.Abort() } } catch {}
     [void]$ps.BeginStop($null, $null)
@@ -2370,6 +2439,7 @@ function Set-CreatorSigner([byte[]]$priv) {
     $s = [Security.Cryptography.ECDsaCng]::new([Security.Cryptography.CngKey]::Import($priv, [Security.Cryptography.CngKeyBlobFormat]::EccPrivateBlob))
     $s.HashAlgorithm = [Security.Cryptography.CngAlgorithm]::Sha256
     $script:CreatorSigner = $s
+    $script:CreatorPriv = $priv   # a mesma chave abre os relatorios (ECDH), so na memoria
 }
 
 function Unlock-Creator([switch]$Optional) {
@@ -2583,6 +2653,602 @@ function Check-VipRevoked {
     }
 }
 
+# ----------------------------------------------------------------- efeitos premium: particulas
+# No tema ouro/neon (premium ou VIP), enquanto o prompt espera, brilhinhos aparecem em celulas
+# VAZIAS da tela e somem sozinhos. So apagamos uma celula se ela ainda tiver o nosso brilho,
+# entao texto nunca e estragado (nem se a tela rolar).
+function Test-FxMode { ((Test-GoldMode) -or (Test-NeonMode)) -and $script:Particles }
+function Get-FxPalette {
+    if (Test-NeonMode) { @('White', 'Cyan', 'Magenta', 'DarkCyan', 'DarkMagenta') } else { @('White', 'Yellow', 'Yellow', 'DarkYellow', 'DarkYellow') }
+}
+
+function Get-CellChar([int]$x, [int]$y) {
+    $Host.UI.RawUI.GetBufferContents((New-Object Management.Automation.Host.Rectangle $x, $y, $x, $y))[0, 0].Character
+}
+
+function Update-Sparks($sparks, [int]$inputTop) {
+    $cx = [Console]::CursorLeft; $cy = [Console]::CursorTop
+    $pal = Get-FxPalette
+    try {
+        for ($i = $sparks.Count - 1; $i -ge 0; $i--) {
+            $s = $sparks[$i]; $s.age++
+            if ($s.age -ge $s.life) {
+                if ((Get-CellChar $s.x $s.y) -eq $s.ch) { [Console]::SetCursorPosition($s.x, $s.y); [Console]::Write(' ') }
+                $sparks.RemoveAt($i); continue
+            }
+            if ((Get-CellChar $s.x $s.y) -ne $s.ch) { $sparks.RemoveAt($i); continue }   # algo escreveu por cima
+            [Console]::SetCursorPosition($s.x, $s.y)
+            [Console]::ForegroundColor = $pal[[math]::Min($pal.Count - 1, [int]($s.age * $pal.Count / $s.life))]
+            [Console]::Write($s.ch)
+        }
+        for ($n = 0; $n -lt 2 -and $sparks.Count -lt 20; $n++) {
+            $x = $Rnd.Next(0, [Console]::WindowWidth - 1); $y = [Console]::WindowTop + $Rnd.Next(0, [Console]::WindowHeight)
+            if ($y -lt $inputTop - 1 -or $y -gt $inputTop) {
+                if ((Get-CellChar $x $y) -eq ' ') {
+                    $ch = [char](@('*', '+', '·', '.', '*')[$Rnd.Next(5)])
+                    [Console]::SetCursorPosition($x, $y); [Console]::ForegroundColor = $pal[0]; [Console]::Write($ch)
+                    $sparks.Add(@{ x = $x; y = $y; ch = $ch; age = 0; life = $Rnd.Next(5, 14) })
+                }
+            }
+        }
+    } catch {}
+    try { [Console]::SetCursorPosition($cx, $cy) } catch {}
+    [Console]::ForegroundColor = 'White'
+}
+
+function Clear-Sparks($sparks) {
+    $cx = [Console]::CursorLeft; $cy = [Console]::CursorTop
+    foreach ($s in $sparks) { try { if ((Get-CellChar $s.x $s.y) -eq $s.ch) { [Console]::SetCursorPosition($s.x, $s.y); [Console]::Write(' ') } } catch {} }
+    $sparks.Clear()
+    try { [Console]::SetCursorPosition($cx, $cy) } catch {}
+}
+
+# leitura do prompt com particulas (Enter, Backspace, Esc e setas pra cima/baixo pro historico)
+function Read-PromptLine {
+    if (-not (Test-FxMode)) { return [Console]::ReadLine() }
+    $sparks = New-Object System.Collections.Generic.List[object]
+    $buf = ''; $hist = $script:History.Count
+    $startLeft = [Console]::CursorLeft; $startTop = [Console]::CursorTop
+    $next = [DateTime]::MinValue
+    $setInput = {
+        param($text)
+        [Console]::SetCursorPosition($startLeft, $startTop); [Console]::Write(' ' * $buf.Length)
+        [Console]::SetCursorPosition($startLeft, $startTop); [Console]::ForegroundColor = 'White'; [Console]::Write($text)
+    }
+    while ($true) {
+        if ([Console]::KeyAvailable) {
+            $k = [Console]::ReadKey($true)
+            if ($k.Key -eq 'Enter') { Clear-Sparks $sparks; Write-Host ''; return $buf }
+            elseif ($k.Key -eq 'Backspace') { if ($buf.Length) { $buf = $buf.Substring(0, $buf.Length - 1); Write-Host "`b `b" -NoNewline } }
+            elseif ($k.Key -eq 'Escape') { & $setInput ''; $buf = '' }
+            elseif ($k.Key -eq 'UpArrow' -and $hist -gt 0) { $hist--; $t = $script:History[$hist]; & $setInput $t; $buf = $t }
+            elseif ($k.Key -eq 'DownArrow' -and $hist -lt $script:History.Count) {
+                $hist++; $t = ''; if ($hist -lt $script:History.Count) { $t = $script:History[$hist] }; & $setInput $t; $buf = $t
+            }
+            elseif (-not [char]::IsControl($k.KeyChar)) { $buf += $k.KeyChar; Write-Host $k.KeyChar -NoNewline -ForegroundColor White }
+            continue
+        }
+        if ((Get-Date) -ge $next) { $next = (Get-Date).AddMilliseconds(110); Update-Sparks $sparks ([Console]::CursorTop) }
+        Start-Sleep -Milliseconds 15
+    }
+}
+
+# ----------------------------------------------------------------- fogos de artificio
+function Show-Fireworks {
+    Clear-Host; Cursor $false
+    $W = [Console]::WindowWidth - 1; $H = [Console]::WindowHeight - 1; $top = [Console]::WindowTop
+    $pal = @('Red', 'Yellow', 'Green', 'Cyan', 'Magenta', 'White', 'Blue')
+    if (Test-GoldMode) { $pal = @('Yellow', 'White', 'Yellow', 'DarkYellow') } elseif (Test-NeonMode) { $pal = @('Cyan', 'Magenta', 'White', 'Cyan', 'Magenta') }
+    $dark = @{ Red = 'DarkRed'; Yellow = 'DarkYellow'; Green = 'DarkGreen'; Cyan = 'DarkCyan'; Magenta = 'DarkMagenta'; White = 'Gray'; Blue = 'DarkBlue'; DarkYellow = 'DarkGray' }
+    $rockets = New-Object System.Collections.Generic.List[object]
+    $parts = New-Object System.Collections.Generic.List[object]
+    $drawn = New-Object System.Collections.Generic.List[object]
+    $put = {
+        param([double]$x, [double]$y, $ch, $c)
+        $ix = [int][math]::Round($x); $iy = [int][math]::Round($y)
+        if ($ix -lt 0 -or $ix -ge $W -or $iy -lt 0 -or $iy -ge $H) { return }
+        [Console]::SetCursorPosition($ix, $top + $iy); [Console]::ForegroundColor = $c; [Console]::Write($ch)
+        $drawn.Add(@($ix, $iy))
+    }
+    [Console]::SetCursorPosition(1, $top + $H); [Console]::ForegroundColor = 'DarkGray'; [Console]::Write('qualquer tecla para sair')
+    $end = (Get-Date).AddSeconds(35); $nextLaunch = Get-Date
+    while (-not [Console]::KeyAvailable -and (Get-Date) -lt $end) {
+        foreach ($d in $drawn) { [Console]::SetCursorPosition($d[0], $top + $d[1]); [Console]::Write(' ') }
+        $drawn.Clear()
+        if ((Get-Date) -ge $nextLaunch) {
+            $rockets.Add(@{ x = [double]$Rnd.Next(6, [math]::Max(7, $W - 6)); y = [double]($H - 1); vy = -(0.8 + $Rnd.NextDouble() * 0.5)
+                            c = $pal[$Rnd.Next($pal.Count)]; apex = $Rnd.Next([int]($H * 0.12), [int]($H * 0.5) + 1) })
+            $nextLaunch = (Get-Date).AddMilliseconds(450 + $Rnd.Next(800))
+            Play (250 + $Rnd.Next(150)),8
+        }
+        for ($i = $rockets.Count - 1; $i -ge 0; $i--) {
+            $r = $rockets[$i]; $r.y += $r.vy
+            if ($r.y -le $r.apex) {
+                $n = 22 + $Rnd.Next(10)
+                for ($j = 0; $j -lt $n; $j++) {
+                    $ang = 2 * [math]::PI * $j / $n + $Rnd.NextDouble() * 0.2; $sp = 0.5 + $Rnd.NextDouble() * 0.8
+                    $c = $r.c; if ($Rnd.Next(4) -eq 0) { $c = $pal[$Rnd.Next($pal.Count)] }
+                    $parts.Add(@{ x = $r.x; y = $r.y; vx = [math]::Cos($ang) * $sp * 2.0; vy = [math]::Sin($ang) * $sp; age = 0; life = 13 + $Rnd.Next(9); c = $c })
+                }
+                $rockets.RemoveAt($i); Play (90 + $Rnd.Next(60)),20
+            } else { & $put $r.x $r.y '|' 'White'; & $put $r.x ($r.y + 1) '.' 'DarkGray' }
+        }
+        for ($i = $parts.Count - 1; $i -ge 0; $i--) {
+            $p = $parts[$i]; $p.age++; $p.x += $p.vx; $p.y += $p.vy; $p.vy += 0.055; $p.vx *= 0.96
+            if ($p.age -gt $p.life) { $parts.RemoveAt($i); continue }
+            $f = $p.age / $p.life
+            $ch = '*'; if ($f -gt 0.4) { $ch = '+' }; if ($f -gt 0.75) { $ch = '.' }
+            $c = $p.c; if ($f -gt 0.7 -and $dark[$c]) { $c = $dark[$c] }
+            & $put $p.x $p.y $ch $c
+        }
+        Start-Sleep -Milliseconds 45
+    }
+    while ([Console]::KeyAvailable) { [void][Console]::ReadKey($true) }
+    [Console]::ForegroundColor = 'Gray'
+    Show-Header
+}
+
+# ----------------------------------------------------------------- player de musica (premium/VIP)
+# Melodias de dominio publico (e uma original), tocadas com o bipe do PC e um equalizador animado.
+$Songs = @(
+    @{ n = 'Korobeiniki (a do Tetris)'; a = 'folclore russo'
+       s = @(659,320, 494,160, 523,160, 587,320, 523,160, 494,160, 440,320, 440,160, 523,160, 659,320, 587,160, 523,160,
+             494,480, 523,160, 587,320, 659,320, 523,320, 440,320, 440,320, 0,160, 587,480, 698,160, 880,320, 784,160, 698,160,
+             659,480, 523,160, 659,320, 587,160, 523,160, 494,320, 494,160, 523,160, 587,320, 659,320, 523,320, 440,320, 440,320) },
+    @{ n = 'Ode a Alegria'; a = 'Beethoven'
+       s = @(659,300, 659,300, 698,300, 784,300, 784,300, 698,300, 659,300, 587,300, 523,300, 523,300, 587,300, 659,300, 659,450, 587,150, 587,600,
+             659,300, 659,300, 698,300, 784,300, 784,300, 698,300, 659,300, 587,300, 523,300, 523,300, 587,300, 659,300, 587,450, 523,150, 523,600) },
+    @{ n = 'Fur Elise'; a = 'Beethoven'
+       s = @(659,170, 622,170, 659,170, 622,170, 659,170, 494,170, 587,170, 523,170, 440,500, 0,80, 262,170, 330,170, 440,170, 494,500, 0,80,
+             330,170, 415,170, 494,170, 523,500, 0,80, 330,170, 659,170, 622,170, 659,170, 622,170, 659,170, 494,170, 587,170, 523,170, 440,600) },
+    @{ n = 'Brilha, brilha estrelinha'; a = 'tradicional'
+       s = @(523,300, 523,300, 784,300, 784,300, 880,300, 880,300, 784,600, 698,300, 698,300, 659,300, 659,300, 587,300, 587,300, 523,600,
+             784,300, 784,300, 698,300, 698,300, 659,300, 659,300, 587,600, 784,300, 784,300, 698,300, 698,300, 659,300, 659,300, 587,600) },
+    @{ n = 'Parabens pra voce'; a = 'tradicional'
+       s = @(392,220, 392,110, 440,330, 392,330, 523,330, 494,660, 392,220, 392,110, 440,330, 392,330, 587,330, 523,660,
+             392,220, 392,110, 784,330, 659,330, 523,330, 494,330, 440,660, 698,220, 698,110, 659,330, 523,330, 587,330, 523,700) },
+    @{ n = 'Fanfarra AKENETIC'; a = 'original'
+       s = @(523,120, 659,120, 784,120, 1047,360, 784,120, 1047,480, 0,120, 587,120, 740,120, 880,120, 1175,360, 880,120, 1175,480, 0,120,
+             659,120, 831,120, 988,120, 1319,240, 1175,120, 1319,120, 1568,700) }
+)
+
+function Music-Player([string]$arg) {
+    if (-not $arg) {
+        Write-Host ''
+        Write-Host '  ══ PLAYER AKENETIC ══════════════════════' -ForegroundColor $script:T.S
+        for ($i = 0; $i -lt $Songs.Count; $i++) {
+            Write-Host ('   {0}  ' -f ($i + 1)) -NoNewline -ForegroundColor $script:T.A
+            Write-Host $Songs[$i].n.PadRight(28) -NoNewline -ForegroundColor White
+            Write-Host $Songs[$i].a -ForegroundColor DarkGray
+        }
+        Write-Host '  musica <numero>   |   musica aleatoria   (qualquer tecla para parar)' -ForegroundColor DarkGray
+        return
+    }
+    if (-not $script:SoundOn) { Err "Os sons estao desligados. Use 'som on'."; return }
+    if ($arg -match '^(aleatoria|aleatória|random)$') { $song = $Songs | Get-Random }
+    elseif ($arg -match '^\d+$' -and [int]$arg -ge 1 -and [int]$arg -le $Songs.Count) { $song = $Songs[[int]$arg - 1] }
+    else { Err "Escolha de 1 a $($Songs.Count). Veja a lista com: musica"; return }
+
+    $rows = @('Red', 'Yellow', 'Green', 'Cyan', 'Magenta')
+    if (Test-GoldMode) { $rows = @('DarkYellow', 'DarkYellow', 'Yellow', 'Yellow', 'White') } elseif (Test-NeonMode) { $rows = @('DarkMagenta', 'Magenta', 'Cyan', 'Cyan', 'White') }
+    $pal = @('White', 'Yellow', 'Cyan', 'Magenta'); if (Test-FxMode) { $pal = Get-FxPalette }
+    Write-Host ''
+    Box @("♪  TOCANDO: $($song.n)", "    $($song.a)") $script:T.P 'White'
+    $cols = [math]::Min(52, [Console]::WindowWidth - 8)
+    for ($r = 0; $r -lt 8; $r++) { Write-Host '' }
+    $top = [Console]::CursorTop - 8; $left = Center-Pad $cols
+    Cursor $false
+    $notes = $song.s; $total = $notes.Count / 2
+    for ($i = 0; $i -lt $notes.Count; $i += 2) {
+        if ([Console]::KeyAvailable) { [void][Console]::ReadKey($true); break }
+        $f = $notes[$i]; $d = $notes[$i + 1]
+        $base = 0.5; if ($f) { $base = [math]::Max(1.0, [math]::Min(5.0, 1 + ($f - 250) / 180.0)) }
+        # faiscas acima das barras
+        [Console]::SetCursorPosition($left, $top); [Console]::Write(' ' * $cols)
+        for ($k = 0; $k -lt 4 -and $f; $k++) {
+            [Console]::SetCursorPosition($left + $Rnd.Next($cols), $top); [Console]::ForegroundColor = $pal[$Rnd.Next($pal.Count)]
+            [Console]::Write(@('*', '+', '·', '♪')[$Rnd.Next(4)])
+        }
+        # equalizador: 5 linhas, de cima (r=4) para baixo (r=0)
+        $h = for ($c = 0; $c -lt $cols; $c++) { [math]::Max(0, [math]::Min(5, [int][math]::Round($base + [math]::Sin($c * 0.45 + $i * 0.6) * 1.3 + ($Rnd.NextDouble() - 0.5) * 1.6))) }
+        for ($r = 4; $r -ge 0; $r--) {
+            $line = -join ($h | ForEach-Object { if ($_ -gt $r) { '█' } else { ' ' } })
+            [Console]::SetCursorPosition($left, $top + 1 + (4 - $r)); [Console]::ForegroundColor = $rows[$r]; [Console]::Write($line)
+        }
+        $done = [int](($i / 2 + 1) * 30 / $total)
+        [Console]::SetCursorPosition($left, $top + 7); [Console]::ForegroundColor = $script:T.S
+        [Console]::Write(('[' + ('■' * $done) + ('·' * (30 - $done)) + ']'))
+        if ($f) { try { [Console]::Beep($f, $d) } catch {} } else { Start-Sleep -Milliseconds $d }
+    }
+    [Console]::SetCursorPosition(0, $top + 8); [Console]::ForegroundColor = 'Gray'
+    Cursor $true
+    Write-Host "  ♪ fim: $($song.n)" -ForegroundColor $script:T.A
+}
+
+# ----------------------------------------------------------------- presenca anonima / salas ativas
+# Quem esta numa sala manda, ao entrar e a cada 10 min, um sinal publico SEM nome e SEM codigo
+# de sala: so um identificador embaralhado da sala (hash do hash) e um numero aleatorio da sessao.
+# O 'salas' do premium conta os sinais dos ultimos 11 minutos.
+function Get-Hex([string]$text, [int]$bytes) {
+    $h = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($text))
+    ($h[0..($bytes - 1)] | ForEach-Object { $_.ToString('x2') }) -join ''
+}
+$PresenceTopic = 'akn-presenca-' + (Get-Hex 'akenetic-presenca-v1' 6)
+$script:SessionId = -join ((1..8) | ForEach-Object { '{0:x}' -f $Rnd.Next(16) })
+function Get-RoomPresenceId([string]$chatTopic) { Get-Hex "akenetic-presenca|$chatTopic" 4 }
+function Get-ChatTopic([string]$room) { 'akn-' + (Get-Hex "akenetic-topic|$($room.ToLower())" 12) }
+
+function Send-Presence([string]$state) {
+    if (-not $script:ChatKeys) { return }
+    $body = @{ r = (Get-RoomPresenceId $script:ChatKeys.Topic); s = $script:SessionId; a = $state } | ConvertTo-Json -Compress
+    $ps = [powershell]::Create()
+    [void]$ps.AddScript({ param($u, $b) try { Invoke-RestMethod -Method Post -Uri $u -Body $b -ContentType 'text/plain' -TimeoutSec 10 | Out-Null } catch {} }).AddArgument("https://ntfy.sh/$PresenceTopic").AddArgument($body)
+    [void]$ps.BeginInvoke()
+}
+
+function Show-Rooms {
+    Write-Host ''
+    Spin 'Contando salas ativas...' 500
+    try {
+        $wc = New-Object Net.WebClient; $wc.Encoding = [Text.Encoding]::UTF8
+        $txt = $wc.DownloadString("https://ntfy.sh/$PresenceTopic/json?poll=1&since=11m")
+    } catch { Err 'Nao consegui consultar (sem internet?).'; return }
+    $last = @{}
+    foreach ($l in $txt -split "`n") {
+        if (-not $l.Trim()) { continue }
+        try { $o = $l | ConvertFrom-Json; $j = $o.message | ConvertFrom-Json } catch { continue }
+        if ($o.event -ne 'message' -or "$($j.r)" -notmatch '^[0-9a-f]{8}$' -or "$($j.s)" -notmatch '^[0-9a-f]{8,16}$') { continue }
+        $last[[string]$j.s] = @{ r = [string]$j.r; a = [string]$j.a }
+    }
+    $active = @($last.Values | Where-Object { $_.a -eq 'on' })
+    $rooms = @($active | Group-Object { $_.r } | Sort-Object Count -Descending)
+    $mine = ''; if ($script:ChatRoom) { $mine = Get-RoomPresenceId (Get-ChatTopic $script:ChatRoom) }
+    Write-Host ''
+    Box @('SALAS ATIVAS AGORA', '', ('{0} sala(s)  ·  {1} pessoa(s) online' -f $rooms.Count, $active.Count)) $script:T.P 'White'
+    $letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    for ($i = 0; $i -lt $rooms.Count; $i++) {
+        $label = 'Sala ' + $letters[$i % 26]
+        Write-Host ('    {0,-8}' -f $label) -NoNewline -ForegroundColor $script:T.A
+        Write-Host ('■' * [math]::Min(30, $rooms[$i].Count)).PadRight(12) -NoNewline -ForegroundColor $script:T.P
+        Write-Host ('{0} pessoa(s)' -f $rooms[$i].Count) -NoNewline -ForegroundColor White
+        if ($rooms[$i].Name -eq $mine) { Write-Host "   <- sua sala: $script:ChatRoom" -ForegroundColor Yellow } else { Write-Host '' }
+        Start-Sleep -Milliseconds 40
+    }
+    if (-not $rooms.Count) { Write-Host '    ninguem conversando agora.' -ForegroundColor DarkGray }
+    Write-Host '    (anonimo: sem nomes nem codigos; conta quem usa a v2.4+, atualiza a cada 10 min)' -ForegroundColor DarkGray
+}
+
+# ----------------------------------------------------------------- jogos na sala
+# Cada jogada vira uma mensagem 'game' (cifrada como o resto). Todos os aparelhos aplicam as
+# jogadas na ordem em que o servidor entregou, inclusive as proprias, entao o tabuleiro e o
+# resultado saem iguais em todo mundo (PC e celular) sem precisar de servidor de jogo.
+$RacePhrases = @(
+    'o rato roeu a roupa do rei de roma',
+    'tres pratos de trigo para tres tigres tristes',
+    'o terminal de bolso nunca dorme',
+    'quem com ferro fere com ferro sera ferido',
+    'a aranha arranha a ra a ra arranha a aranha',
+    'o mestre rolou um dado e saiu critico',
+    'pendrive na mao e chat criptografado no bolso',
+    'nem tudo que reluz e ouro mas o tema neon brilha',
+    'um dragao dorme em cima de uma montanha de moedas',
+    'digitar rapido e uma arte que poucos dominam'
+)
+
+function New-GameId { -join ((1..6) | ForEach-Object { '{0:x}' -f $Rnd.Next(16) }) }
+
+function Add-Win([string]$who, [string]$game) {
+    if (-not $script:Score.ContainsKey($who)) { $script:Score[$who] = 0 }
+    $script:Score[$who]++
+    Write-Host ''
+    Write-Host "          ** $who venceu ($game)! **" -ForegroundColor Yellow
+    if ($who -eq $script:ChatName) { Play 523,80,659,80,784,80,1047,220 } else { Play 784,80,523,160 }
+}
+
+function Show-Score {
+    Write-Host ''
+    Write-Host '  ══ PLACAR DA SALA ══════════════' -ForegroundColor $script:T.S
+    if (-not $script:Score.Count) { Write-Host '  ninguem venceu nada ainda. /velha /ppt /digita' -ForegroundColor DarkGray; return }
+    $i = 0
+    foreach ($e in ($script:Score.GetEnumerator() | Sort-Object Value -Descending)) {
+        $i++; $medal = '  '; if ($i -eq 1) { $medal = '1º' } elseif ($i -eq 2) { $medal = '2º' } elseif ($i -eq 3) { $medal = '3º' }
+        Write-Host "  $medal  " -NoNewline -ForegroundColor Yellow
+        Write-Host ('{0,-16}' -f $e.Key) -NoNewline -ForegroundColor (Name-Color $e.Key)
+        Write-Host ('{0} vitoria(s)' -f $e.Value) -ForegroundColor $script:T.T
+    }
+}
+
+function Handle-Game($p, [string]$name, $o) {
+    $x = $p.x; if (-not $x) { return }
+    switch ([string]$x.g) {
+        'velha'  { Handle-Velha $x $name }
+        'ppt'    { Handle-Ppt $x $name }
+        'digita' { Handle-Race $x $name $o }
+    }
+}
+
+# --- jogo da velha
+function Show-Velha {
+    $v = $script:Velha
+    Write-Host ''
+    for ($r = 0; $r -lt 3; $r++) {
+        Write-Host '            ' -NoNewline
+        for ($c = 0; $c -lt 3; $c++) {
+            $i = $r * 3 + $c; $s = $v.b[$i]
+            if ($s -eq 'X') { Write-Host ' X ' -NoNewline -ForegroundColor Cyan }
+            elseif ($s -eq 'O') { Write-Host ' O ' -NoNewline -ForegroundColor Magenta }
+            else { Write-Host " $($i + 1) " -NoNewline -ForegroundColor DarkGray }
+            if ($c -lt 2) { Write-Host '│' -NoNewline -ForegroundColor $script:T.S }
+        }
+        Write-Host ''
+        if ($r -lt 2) { Write-Host '            ───┼───┼───' -ForegroundColor $script:T.S }
+    }
+}
+
+function Get-VelhaWinner($b) {
+    foreach ($l in @(@(0, 1, 2), @(3, 4, 5), @(6, 7, 8), @(0, 3, 6), @(1, 4, 7), @(2, 5, 8), @(0, 4, 8), @(2, 4, 6))) {
+        if ($b[$l[0]] -and $b[$l[0]] -eq $b[$l[1]] -and $b[$l[1]] -eq $b[$l[2]]) { return $b[$l[0]] }
+    }
+    if (@($b | Where-Object { $_ }).Count -eq 9) { return 'empate' }
+    $null
+}
+
+function Write-VelhaTurn {
+    $v = $script:Velha
+    $who = $v.x; if ($v.turn -eq 'O') { $who = $v.o }
+    $c = 'Cyan'; if ($v.turn -eq 'O') { $c = 'Magenta' }
+    Write-Host "          vez de " -NoNewline -ForegroundColor DarkGray
+    Write-Host "$who ($($v.turn))" -NoNewline -ForegroundColor $c
+    Write-Host '  ->  /jogar 1-9' -ForegroundColor DarkGray
+    if ($who -eq $script:ChatName) { Play 1319,60 }
+}
+
+function Handle-Velha($x, [string]$name) {
+    $v = $script:Velha
+    switch ([string]$x.a) {
+        'convite' {
+            if ($v -and -not $v.over -and $v.o) { return }
+            $script:Velha = @{ id = [string]$x.id; x = $name; o = $null; b = @('', '', '', '', '', '', '', '', ''); turn = 'X'; over = $false }
+            Write-ChatNotice "$name desafiou a sala pro JOGO DA VELHA! quem topa: /aceitar" Cyan
+            Play 659,70,880,110
+        }
+        'aceito' {
+            if (-not $v -or $v.id -ne [string]$x.id -or $v.o -or $v.x -eq $name -or $v.over) { return }
+            $v.o = $name
+            Write-ChatNotice "$name aceitou!  $($v.x) (X)  contra  $name (O)" Cyan
+            Show-Velha; Write-VelhaTurn
+        }
+        'jogada' {
+            if (-not $v -or $v.id -ne [string]$x.id -or $v.over -or -not $v.o) { return }
+            $who = $v.x; if ($v.turn -eq 'O') { $who = $v.o }
+            $c = [int]$x.c - 1
+            if ($name -ne $who -or $c -lt 0 -or $c -gt 8 -or $v.b[$c]) { return }
+            $v.b[$c] = $v.turn
+            Show-Velha; Play 1047,30
+            $w = Get-VelhaWinner $v.b
+            if ($w -eq 'empate') { $v.over = $true; Write-ChatNotice 'deu velha! empate' Yellow; Play 440,120,440,120 }
+            elseif ($w) { $v.over = $true; $win = $v.x; if ($w -eq 'O') { $win = $v.o }; Add-Win $win 'jogo da velha' }
+            else { if ($v.turn -eq 'X') { $v.turn = 'O' } else { $v.turn = 'X' }; Write-VelhaTurn }
+        }
+        'desiste' {
+            if (-not $v -or $v.id -ne [string]$x.id -or $v.over -or -not $v.o -or ($name -ne $v.x -and $name -ne $v.o)) { return }
+            $v.over = $true
+            Write-ChatNotice "$name desistiu" DarkGray
+            $win = $v.x; if ($name -eq $v.x) { $win = $v.o }; Add-Win $win 'jogo da velha'
+        }
+    }
+}
+
+# --- pedra-papel-tesoura (compromisso + revelacao: cada um manda primeiro o hash da jogada;
+#     so depois que os dois jogaram as jogadas sao reveladas e conferidas com o hash)
+function Get-PptChoice([string]$s) {
+    switch -Regex ("$s".ToLower().Trim()) { '^pe' { 'pedra' } '^pa' { 'papel' } '^t' { 'tesoura' } default { $null } }
+}
+
+function Get-PptHash([string]$e, [string]$salt, [string]$id) {
+    ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes("$e|$salt|$id")) | ForEach-Object { $_.ToString('x2') }) -join ''
+}
+
+function Handle-Ppt($x, [string]$name) {
+    $id = [string]$x.id
+    switch ([string]$x.a) {
+        'aposta' {
+            if (-not $script:PptRounds.ContainsKey($id)) { $script:PptRounds[$id] = @{ id = $id; c = @{}; rv = @{}; done = $false; sent = $false } }
+            $r = $script:PptRounds[$id]
+            if ($r.done -or $r.c.Count -ge 2 -or $r.c.ContainsKey($name)) { return }
+            $r.c[$name] = [string]$x.h
+            if ($r.c.Count -eq 1 -and $name -ne $script:ChatName) { Write-ChatNotice "$name jogou PEDRA-PAPEL-TESOURA! responda: /ppt pedra | papel | tesoura" Cyan; Play 659,70,880,110 }
+            if ($r.c.Count -eq 2) {
+                Write-ChatNotice ('{0} x {1}: jo... ken... po!' -f @($r.c.Keys)) $script:T.A
+                $mine = $script:MyPpt[$id]
+                if ($mine -and $r.c.ContainsKey($script:ChatName) -and -not $r.sent) {
+                    $r.sent = $true
+                    [void](Send-Chat 'game' '' @{ g = 'ppt'; a = 'revela'; id = $id; e = $mine.e; s = $mine.s })
+                }
+            }
+        }
+        'revela' {
+            $r = $script:PptRounds[$id]
+            if (-not $r -or $r.done -or -not $r.c.ContainsKey($name) -or $r.rv.ContainsKey($name)) { return }
+            $e = Get-PptChoice ([string]$x.e)
+            if (-not $e -or (Get-PptHash $e ([string]$x.s) $id) -ne $r.c[$name]) { Write-ChatNotice "$name tentou trocar a jogada! (anulada)" Red; return }
+            $r.rv[$name] = $e
+            if ($r.rv.Count -eq 2) {
+                $r.done = $true
+                $a, $b = @($r.rv.Keys)
+                $ea = $r.rv[$a]; $eb = $r.rv[$b]
+                Write-Host ''
+                Write-Host "          ${a}: " -NoNewline -ForegroundColor (Name-Color $a); Write-Host $ea.ToUpper() -NoNewline -ForegroundColor White
+                Write-Host '   x   ' -NoNewline -ForegroundColor DarkGray
+                Write-Host "${b}: " -NoNewline -ForegroundColor (Name-Color $b); Write-Host $eb.ToUpper() -ForegroundColor White
+                $beats = @{ pedra = 'tesoura'; tesoura = 'papel'; papel = 'pedra' }
+                if ($ea -eq $eb) { Write-ChatNotice 'empate!' Yellow; Play 440,120,440,120 }
+                elseif ($beats[$ea] -eq $eb) { Add-Win $a 'pedra-papel-tesoura' }
+                else { Add-Win $b 'pedra-papel-tesoura' }
+            }
+        }
+    }
+}
+
+# --- corrida de digitacao (o vencedor e decidido pela ordem do servidor, igual pra todos)
+function Get-RaceNorm([string]$s) { (("$s".ToLower() -replace '[^\p{L}\p{Nd} ]', '') -replace '\s+', ' ').Trim() }
+
+function Handle-Race($x, [string]$name, $o) {
+    if ([string]$x.a -ne 'frase') { return }
+    $f = Cut ([string]$x.f) 120
+    if (-not $f) { return }
+    $script:Race = @{ id = [string]$x.id; f = $f; t0 = [long]$o.time; winner = $null }
+    Write-Host ''
+    Box @("CORRIDA DE DIGITACAO  (por $name)", 'Digite EXATAMENTE a frase abaixo e aperte Enter:', '', $f) 'Yellow' 'White'
+    Play 880,90,0,60,880,90,0,60,1760,200
+}
+
+function Check-RaceAnswer([string]$name, [string]$text, [long]$time) {
+    $r = $script:Race
+    if (-not $r -or $r.winner -or (Get-RaceNorm $text) -ne (Get-RaceNorm $r.f)) { return }
+    $r.winner = $name
+    $secs = [math]::Max(1, $time - $r.t0)
+    Write-ChatNotice "$name copiou a frase em ${secs}s!" Yellow
+    Add-Win $name 'corrida de digitacao'
+}
+
+# ----------------------------------------------------------------- tutorial
+function Show-Tutorial {
+    $site = "$($SiteBase)"
+    $pages = @(
+        @('BEM-VINDO AO AKENETIC  (1/5)', '',
+          'Seu terminal de bolso: chat criptografado, RPG, jogos,',
+          'fotos e audios -- no PC e no celular, com a mesma conta.'),
+        @('O BASICO  (2/5)', '',
+          'ajuda        lista todos os comandos',
+          'tema azul    muda as cores (verde azul roxo vermelho arcoiris)',
+          'limpar       limpa a tela        sair   fecha o terminal'),
+        @('CHAT COM AMIGOS  (3/5)', '',
+          'chat         entra numa sala: combine codigo + senha com o amigo',
+          '             so quem sabe a senha consegue ler as mensagens',
+          "No celular:  $site",
+          'conta exportar   leva sua conta pro celular'),
+        @('JOGOS E RPG NA SALA  (4/5)', '',
+          '/velha       jogo da velha        /ppt pedra   pedra-papel-tesoura',
+          '/digita      corrida de digitacao /placar      quem esta ganhando',
+          '/r 1d20      rola dados           /ficha       ficha de RPG'),
+        @('PRONTO!  (5/5)', '',
+          'atualizar    pega a versao mais nova',
+          'relatorio    achou um bug? manda direto pro criador',
+          'tutorial     mostra este guia de novo')
+    )
+    foreach ($pg in $pages) {
+        Write-Host ''
+        Box $pg $script:T.P 'White'
+        Write-Host '  [Enter] continuar     [Esc] pular' -ForegroundColor DarkGray
+        Sfx tick
+        $k = [Console]::ReadKey($true)
+        if ($k.Key -eq 'Escape') { break }
+    }
+    Bot 'Bora! Digite chat pra chamar um amigo ou ajuda pra ver tudo.'
+}
+
+# ----------------------------------------------------------------- relatorios de bug
+# O usuario cifra o relatorio com a chave PUBLICA do criador (ECDH P-256 com chave efemera +
+# AES/HMAC): so a chave privada do criador abre. Vai para um topico do ntfy; o terminal
+# premium baixa os novos ao abrir (o ntfy guarda ~12h) e guarda em relatorios.dat.
+$ReportsFile = Join-Path $Root 'relatorios.dat'
+$script:LastReport = [DateTime]::MinValue
+
+function Get-ReportTopic {
+    if (-not $script:CreatorPub) { return $null }
+    $h = [Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes("akenetic-relatorio|$($script:CreatorPub)"))
+    'akn-rel-' + (($h[0..11] | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+# blob CNG de chave publica ECDH P-256 ("ECK1") a partir de X||Y
+function Get-EcdhPublicKey([byte[]]$xy) {
+    $blob = New-Object byte[] 72
+    [Array]::Copy([byte[]](0x45, 0x43, 0x4B, 0x31, 0x20, 0, 0, 0), $blob, 8)
+    [Array]::Copy($xy, 0, $blob, 8, 64)
+    [Security.Cryptography.CngKey]::Import($blob, [Security.Cryptography.CngKeyBlobFormat]::EccPublicBlob)
+}
+
+# segredo ECDH -> SHA-256 (padrao do CNG) -> chaves de cifra e de autenticacao
+function New-ReportKeys([byte[]]$km) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    @{ Enc = $sha.ComputeHash([byte[]]($km + [byte]1)); Mac = $sha.ComputeHash([byte[]]($km + [byte]2)) }
+}
+
+function Send-Report([string]$text) {
+    if (-not $script:CreatorPub) { Err 'Este AKENETIC ainda nao conhece o criador. Digite atualizar e tente de novo.'; return }
+    if (((Get-Date) - $script:LastReport).TotalSeconds -lt 120) { Err 'Espere 2 minutos entre um relatorio e outro.'; return }
+    if (-not $text) { $text = Ask 'Conte o que aconteceu (o que fez, o que apareceu)' }
+    if ($text.Length -lt 5) { Err 'Escreva um pouco mais sobre o problema.'; return }
+    $os = ''; try { $os = (Get-CimInstance Win32_OperatingSystem).Caption } catch {}
+    $info = [ordered]@{ texto = (Cut $text 800); versao = $Version; conta = [string]$script:Account.nome; plataforma = "PC - $os"; data = (Get-Date -Format 'dd/MM/yyyy HH:mm'); erro = '' }
+    if ($Error.Count) { $info.erro = Cut ([string]$Error[0]) 300 }
+    Spin 'Cifrando o relatorio para o criador...' 400
+    try {
+        $eph = [Security.Cryptography.ECDiffieHellmanCng]::new(256)
+        $km  = $eph.DeriveKeyMaterial((Get-EcdhPublicKey ([Convert]::FromBase64String($script:CreatorPub))))
+        $xy  = New-Object byte[] 64; [Array]::Copy($eph.PublicKey.ToByteArray(), 8, $xy, 0, 64)
+        $data = Protect-Bytes ([Text.Encoding]::UTF8.GetBytes(($info | ConvertTo-Json -Compress))) (New-ReportKeys $km)
+        $body = @{ e = [Convert]::ToBase64String($xy); d = [Convert]::ToBase64String($data) } | ConvertTo-Json -Compress
+        Invoke-RestMethod -Method Post -Uri "https://ntfy.sh/$(Get-ReportTopic)" -Body $body -ContentType 'text/plain' -TimeoutSec 15 | Out-Null
+    } catch { Err "Nao consegui enviar: $($_.Exception.Message)"; return }
+    $script:LastReport = Get-Date
+    Bot 'Relatorio enviado! So o criador consegue ler. Valeu por ajudar :)'
+    Sfx ok
+}
+
+# premium: baixa os relatorios novos (ainda cifrados) e avisa quantos chegaram
+function Sync-Reports {
+    $topic = Get-ReportTopic; if (-not $topic) { return }
+    $since = '12h'; $known = New-Object 'System.Collections.Generic.HashSet[string]'
+    if (Test-Path -LiteralPath $ReportsFile) {
+        foreach ($l in Get-Content -LiteralPath $ReportsFile) { $id = ($l -split "`t", 3)[0]; [void]$known.Add($id); $since = $id }
+    }
+    try {
+        $req = [Net.HttpWebRequest]::Create("https://ntfy.sh/$topic/json?poll=1&since=$since")
+        $req.Timeout = 4000; $req.ReadWriteTimeout = 4000
+        $resp = $req.GetResponse(); $txt = (New-Object IO.StreamReader($resp.GetResponseStream(), [Text.Encoding]::UTF8)).ReadToEnd(); $resp.Close()
+    } catch { return }
+    $new = 0
+    foreach ($l in $txt -split "`n") {
+        if (-not $l.Trim()) { continue }
+        try { $o = $l | ConvertFrom-Json } catch { continue }
+        if ($o.event -ne 'message' -or -not $known.Add($o.id)) { continue }
+        Add-Content -LiteralPath $ReportsFile -Value "$($o.id)`t$($o.time)`t$($o.message)" -Encoding ASCII
+        $new++
+    }
+    if ($new) { Write-Host "  [*] $new relatorio(s) de bug novo(s) dos usuarios. Digite 'relatorios'." -ForegroundColor Yellow; Play 880,60,1175,90 }
+}
+
+function Show-Reports([string]$arg) {
+    Sync-Reports
+    if (-not (Test-Path -LiteralPath $ReportsFile)) { Bot 'Nenhum relatorio ainda. (Os usuarios mandam com: relatorio <texto>)'; return }
+    if (-not (Unlock-Creator)) { return }
+    $n = 10; if ($arg -match '^\d{1,3}$') { $n = [int]$arg }
+    try {
+        $blob = [byte[]]$script:CreatorPriv.Clone(); $blob[2] = 0x4B   # "ECS2" -> "ECK2": a mesma chave, usada como ECDH
+        $ecdh = [Security.Cryptography.ECDiffieHellmanCng]::new([Security.Cryptography.CngKey]::Import($blob, [Security.Cryptography.CngKeyBlobFormat]::EccPrivateBlob))
+    } catch { Err "Nao consegui abrir a chave para ler: $($_.Exception.Message)"; return }
+    $lines = @(Get-Content -LiteralPath $ReportsFile | Select-Object -Last $n)
+    Write-Host ''
+    Write-Host "  ══ RELATORIOS DE BUG (ultimos $($lines.Count)) ══════════════" -ForegroundColor $script:T.S
+    foreach ($l in $lines) {
+        $id, $t, $msg = $l -split "`t", 3
+        try {
+            $j = $msg | ConvertFrom-Json
+            $km = $ecdh.DeriveKeyMaterial((Get-EcdhPublicKey ([Convert]::FromBase64String($j.e))))
+            $raw = Unprotect-Bytes ([Convert]::FromBase64String($j.d)) (New-ReportKeys $km)
+            if ($null -eq $raw) { throw 'x' }
+            $r = [Text.Encoding]::UTF8.GetString($raw) | ConvertFrom-Json
+            Write-Host ''
+            Write-Host "  ♦ $($r.data)  " -NoNewline -ForegroundColor Yellow
+            Write-Host "$($r.conta)  ·  v$($r.versao)  ·  $($r.plataforma)" -ForegroundColor DarkGray
+            Write-Host "    $(Clean ([string]$r.texto))" -ForegroundColor White
+            if ($r.erro) { Write-Host "    erro: $(Clean ([string]$r.erro))" -ForegroundColor DarkRed }
+        } catch { Write-Host '  (relatorio ilegivel: cifrado para outra chave de criador)' -ForegroundColor DarkGray }
+    }
+}
+
 # ----------------------------------------------------------------- conta (login)
 # Perfil local, igual no PC e no celular: conta.dat = {nome, s: salt, d: dados cifrados com a senha}.
 # Sem servidor: a senha nunca sai do aparelho. "AKNCONTA.<base64 do registro>" leva a conta
@@ -2628,6 +3294,7 @@ function Register-Account {
     Save-AccountRecord $rec
     Set-LoggedIn ([pscustomobject]@{ nome = $nome; criada = (Get-Date -Format 'yyyy-MM-dd') })
     Write-Host "  √ conta criada! Bem-vindo, $nome" -ForegroundColor Green
+    $script:IsNewAccount = $true
     $true
 }
 
@@ -3113,13 +3780,15 @@ if (-not $IsPremium) {
 Check-Aviso
 Check-Novidades
 Check-VipRevoked
+if ($IsPremium) { Sync-Reports }
+if ($script:IsNewAccount) { Show-Tutorial }
 Cursor $true
 
 # ----------------------------------------------------------------- loop principal
 while ($true) {
     Check-Aviso
     Write-Prompt
-    $line = [Console]::ReadLine()
+    $line = Read-PromptLine
     [Console]::ForegroundColor = 'Gray'
     if ($null -eq $line) { break }
     $line = $line.Trim()
@@ -3150,6 +3819,9 @@ while ($true) {
         '^criador$'             { if ($IsPremium) { Creator $arg } else { Err 'Comando exclusivo da edicao premium.' }; break }
         '^vip$'                 { Vip $arg; break }
         '^conta$'               { Account-Command $arg; break }
+        '^tutorial$'            { Show-Tutorial; break }
+        '^relatorio$'           { Send-Report $arg; break }
+        '^relatorios$'          { if ($IsPremium) { Show-Reports $arg } else { Err 'So o criador le os relatorios.' }; break }
         '^pendrive$'            { Show-Pendrive; break }
         '^(ls|dir)$'            { if ($arg) { Run-Cmd $line } else { Show-Files }; break }
         '^cd$' {
@@ -3183,7 +3855,15 @@ while ($true) {
         '^piada$'               { Write-Host ''; Bot ($Jokes | Get-Random); Play 523,80,659,80,784,120; break }
         '^matrix$'              { Matrix; break }
         '^hack$'                { Hack; break }
-        '^(musica|música)$'     { Music; break }
+        '^(musica|música)$'     { if ($IsPremium -or $script:IsVip) { Music-Player $arg } else { Music }; break }
+        '^fogos$'               { if ($IsPremium -or $script:IsVip) { Show-Fireworks } else { Err 'Exclusivo do premium e dos VIPs.' }; break }
+        '^efeitos$' {
+            if (-not ($IsPremium -or $script:IsVip)) { Err 'Exclusivo do premium e dos VIPs.'; break }
+            if ($arg -eq 'off') { $script:Particles = $false; Bot 'Particulas desligadas.' }
+            else { $script:Particles = $true; Bot 'Particulas ligadas! (aparecem no tema ouro ou neon)' }
+            Save-Config; break
+        }
+        '^salas$'               { if ($IsPremium) { Show-Rooms } else { Err 'Comando exclusivo da edicao premium.' }; break }
         '^tema$'                { if ($arg) { Set-Theme $arg } else { Bot "Temas: $($Themes.Keys -join ', ')  (atual: $script:ThemeName)" }; break }
         '^som$' {
             if ($arg -eq 'off') { $script:SoundOn = $false; Bot 'Sons desligados.' }
