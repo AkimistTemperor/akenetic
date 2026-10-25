@@ -20,7 +20,7 @@ $NotesFile  = Join-Path $Root 'notas.txt'
 $ConfigFile = Join-Path $Root 'config.txt'
 # a edicao premium e liberada pelo arquivo premium.key, que o 'compartilhar' nunca copia
 $IsPremium  = Test-Path -LiteralPath (Join-Path $Root 'premium.key')
-$Version    = '2.1'
+$Version    = '2.2'
 # de onde o comando 'atualizar' baixa a versao nova (publicada pelo 'site publicar' do premium)
 $SiteBase   = 'https://akimisttemperor.github.io/akenetic/'
 $UpdateBase = "$($SiteBase)pc/"
@@ -1934,7 +1934,49 @@ function Get-SiteFiles {
     }
     $list += @{ Path = 'pc/terminal.ps1'; File = Join-Path $Root 'terminal.ps1' }
     $list += @{ Path = 'pc/ABRIR TERMINAL.bat'; File = "$Drive\ABRIR TERMINAL.bat" }
+    # site de apresentacao (D:\Site) vai para /sobre/
+    $siteDir = "$Drive\Site"
+    foreach ($f in Get-ChildItem -LiteralPath $siteDir -File -Recurse -ErrorAction SilentlyContinue) {
+        $list += @{ Path = 'sobre/' + $f.FullName.Substring($siteDir.Length + 1).Replace('\', '/'); File = $f.FullName }
+    }
     $list
+}
+
+# .zip "Baixar para pendrive" do site: so o programa (nunca chave premium, conta ou dados).
+# Datas fixas nas entradas para o zip so mudar quando o terminal mudar.
+function Build-PendriveZip {
+    $out = "$Drive\Site\akenetic-pendrive.zip"
+    if (-not (Test-Path -LiteralPath "$Drive\Site")) { return }
+    $readme = @"
+AKENETIC - versao de pendrive (Windows 10/11)
+
+1. Extraia tudo para a raiz do seu pendrive (ou para uma pasta).
+2. Abra "ABRIR TERMINAL.bat".
+3. Crie sua conta, ou importe a do celular (no app: conta exportar).
+4. Digite "ajuda" para ver os comandos.
+
+O antivirus reclamou? Alguns desconfiam de qualquer script baixado. Se confiar,
+clique com o botao direito no .zip > Propriedades > Desbloquear, antes de extrair.
+
+Site: $($SiteBase)sobre/
+Termos de Uso: $($SiteBase)sobre/termos.html
+"@
+    $entries = @(
+        @{ Name = 'ABRIR TERMINAL.bat'; Bytes = [IO.File]::ReadAllBytes("$Drive\ABRIR TERMINAL.bat") },
+        @{ Name = 'Terminal/terminal.ps1'; Bytes = [IO.File]::ReadAllBytes((Join-Path $Root 'terminal.ps1')) },
+        @{ Name = 'LEIA-ME.txt'; Bytes = [Text.Encoding]::UTF8.GetBytes($readme.Replace("`n", "`r`n").Replace("`r`r", "`r")) }
+    )
+    Add-Type -AssemblyName System.IO.Compression
+    $ms = New-Object IO.MemoryStream
+    $zip = [IO.Compression.ZipArchive]::new($ms, [IO.Compression.ZipArchiveMode]::Create, $true)
+    foreach ($e in $entries) {
+        $z = $zip.CreateEntry($e.Name, [IO.Compression.CompressionLevel]::Optimal)
+        $z.LastWriteTime = [DateTimeOffset]::new(2026, 1, 1, 0, 0, 0, [TimeSpan]::Zero)
+        $s = $z.Open(); $s.Write($e.Bytes, 0, $e.Bytes.Length); $s.Close()
+    }
+    $zip.Dispose()
+    $new = $ms.ToArray()
+    if (-not (Test-Path -LiteralPath $out) -or -not (Same-Bytes $new ([IO.File]::ReadAllBytes($out)))) { [IO.File]::WriteAllBytes($out, $new) }
 }
 
 function Get-RemoteTree([switch]$Anonymous) {
@@ -1974,6 +2016,7 @@ function Site-Status {
 
 function Site-Publish([string]$msg) {
     if (-not (Unlock-GitHub)) { return }
+    try { Build-PendriveZip } catch { Err "Nao consegui gerar o zip do pendrive: $($_.Exception.Message)" }
     # se o app ou o terminal mudaram, pergunta as novidades (vao junto, em novidades.json)
     try {
         $remote = Get-RemoteTree
@@ -2179,10 +2222,10 @@ function Site([string]$arg) {
 # Servidor local minimo (TcpListener, nao precisa de administrador) servindo D:\Celular,
 # pra ver o app no navegador do PC antes de publicar. Morre junto com o terminal.
 $TestServer = {
-    param($root, $listener, $state)
+    param($root, $listener, $state, $siteRoot)
     $types = @{ '.html' = 'text/html; charset=utf-8'; '.js' = 'application/javascript'; '.json' = 'application/json'
-                '.webmanifest' = 'application/manifest+json'; '.png' = 'image/png'; '.txt' = 'text/plain; charset=utf-8' }
-    $rootFull = [IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
+                '.webmanifest' = 'application/manifest+json'; '.png' = 'image/png'; '.txt' = 'text/plain; charset=utf-8'; '.zip' = 'application/zip' }
+    $appRoot = $root
     while (-not $state.Stop) {
         try {
             $client = $listener.AcceptTcpClient()
@@ -2190,8 +2233,14 @@ $TestServer = {
             $rd = New-Object IO.StreamReader($stream, [Text.Encoding]::ASCII)
             $first = $rd.ReadLine()
             while ($rd.ReadLine()) {}
-            $path = 'index.html'
-            if ($first -match '^GET\s+/([^\s?#]*)' -and $Matches[1]) { $path = [Uri]::UnescapeDataString($Matches[1]) }
+            $path = ''
+            if ($first -match '^GET\s+/([^\s?#]*)') { $path = [Uri]::UnescapeDataString($Matches[1]) }
+            # /sobre/... vem do D:\Site (igual no GitHub Pages); o resto do D:\Celular
+            $root = $appRoot
+            if ($path -eq 'sobre') { $path = 'sobre/' }
+            if ($path.StartsWith('sobre/') -and $siteRoot) { $root = $siteRoot; $path = $path.Substring(6) }
+            if (-not $path -or $path.EndsWith('/')) { $path += 'index.html' }
+            $rootFull = [IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
             $file = [IO.Path]::GetFullPath((Join-Path $root ($path -replace '/', '\')))
             if ($file.StartsWith($rootFull, [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $file -PathType Leaf)) {
                 $body = [IO.File]::ReadAllBytes($file); $status = '200 OK'
@@ -2220,7 +2269,7 @@ function Site-Test([string]$arg) {
         $script:TestPort = $port
         $script:TestState = [hashtable]::Synchronized(@{ Stop = $false })
         $ps = [powershell]::Create()
-        [void]$ps.AddScript($TestServer).AddArgument("$Drive\Celular").AddArgument($listener).AddArgument($script:TestState)
+        [void]$ps.AddScript($TestServer).AddArgument("$Drive\Celular").AddArgument($listener).AddArgument($script:TestState).AddArgument("$Drive\Site")
         [void]$ps.BeginInvoke()
     }
     $url = "http://localhost:$script:TestPort/"
@@ -2228,6 +2277,7 @@ function Site-Test([string]$arg) {
     Start-Process $url
     Box @('MODO TESTE DO APP', $url,
           'E o app do D:\Celular, do jeito que esta agora no pendrive.',
+          "Site de apresentacao: $($url)sobre/",
           'Gostou? site publicar.   Terminou? site testar parar')
     Sfx ok
 }

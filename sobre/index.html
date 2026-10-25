@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AKENETIC · seu terminal de bolso</title>
+<meta name="description" content="Chat criptografado, sala de RPG, fotos, vídeos e áudios — no celular e no pendrive. Grátis, sem anúncios e sem coleta de dados.">
+<meta name="theme-color" content="#0c0c0c">
+<meta property="og:type" content="website">
+<meta property="og:title" content="AKENETIC · seu terminal de bolso">
+<meta property="og:description" content="Chat criptografado, sala de RPG, fotos, vídeos e áudios — no celular e no pendrive. Grátis e sem coleta de dados.">
+<meta property="og:image" content="https://akimisttemperor.github.io/akenetic/sobre/og.png">
+<meta property="og:url" content="https://akimisttemperor.github.io/akenetic/sobre/">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="../icon-192.png">
+<style>
+  :root {
+    --bg: #0c0c0c; --bg2: #121212; --line: #232323; --text: #cccccc; --dim: #8a8a8a;
+    --green: #16c60c; --green2: #13a10e; --cyan: #61d6d6; --yellow: #f9f1a5; --magenta: #d46cc8; --white: #f2f2f2;
+    --mono: 'Cascadia Mono', 'Cascadia Code', Consolas, 'SF Mono', Menlo, 'Roboto Mono', 'Liberation Mono', 'DejaVu Sans Mono', monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 var(--mono); }
+  a { color: var(--cyan); }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 16px; }
+  /* faixa de "scanlines" bem leve, so de enfeite */
+  body::before { content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 50;
+    background: repeating-linear-gradient(to bottom, rgba(255,255,255,.018) 0 1px, transparent 1px 3px); }
+
+  header.top { position: sticky; top: 0; z-index: 10; background: rgba(12,12,12,.92); border-bottom: 1px solid var(--line); backdrop-filter: blur(6px); }
+  header.top .wrap { display: flex; align-items: center; justify-content: space-between; height: 56px; gap: 12px; }
+  .logo { color: var(--green); font-weight: 700; text-decoration: none; letter-spacing: .08em; }
+  .logo span { color: var(--white); }
+  nav a { color: var(--dim); text-decoration: none; margin-left: 18px; font-size: 14px; }
+  nav a:hover { color: var(--green); }
+  @media (max-width: 640px) { nav a.opt { display: none; } }
+
+  .hero { padding: 64px 0 40px; text-align: center; }
+  .banner { margin: 0 auto 28px; font-size: clamp(5px, 1.55vw, 15px); line-height: 1; white-space: pre; overflow: hidden; }
+  .banner span { display: block; }
+  .banner .l0 { color: var(--white); } .banner .l1, .banner .l2 { color: var(--green); }
+  .banner .l3, .banner .l4 { color: var(--green2); } .banner .l5 { color: #5a5a5a; }
+  .banner { animation: ligar 1.4s ease-out both; }
+  @keyframes ligar { 0% { opacity: 0; filter: blur(4px); transform: translateY(8px); } 100% { opacity: 1; filter: none; transform: none; } }
+  h1 { color: var(--white); font-size: clamp(26px, 5vw, 44px); line-height: 1.2; margin: 0 0 14px; }
+  h1 em { color: var(--green); font-style: normal; }
+  .lead { max-width: 640px; margin: 0 auto 30px; color: var(--text); }
+  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 13px 22px; border-radius: 8px; text-decoration: none; font-weight: 700; font-family: var(--mono); font-size: 16px; }
+  .btn.pri { background: var(--green); color: #061006; }
+  .btn.pri:hover { background: #2ee324; }
+  .btn.sec { border: 1px solid var(--green2); color: var(--green); }
+  .btn.sec:hover { background: rgba(22,198,12,.08); }
+  .note { margin-top: 12px; font-size: 13px; color: var(--dim); }
+
+  .demo { max-width: 720px; margin: 46px auto 0; text-align: left; border: 1px solid var(--line); border-radius: 10px; background: var(--bg2); overflow: hidden; box-shadow: 0 0 40px rgba(22,198,12,.07); }
+  .demo .bar { display: flex; gap: 7px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .demo .bar i { width: 11px; height: 11px; border-radius: 50%; background: #333; }
+  .demo .bar b { margin-left: 8px; color: var(--dim); font-weight: 400; font-size: 13px; }
+  .demo pre { margin: 0; padding: 16px 18px 20px; min-height: 250px; font: 14px/1.6 var(--mono); white-space: pre-wrap; word-break: break-word; }
+  .c-g { color: var(--green); } .c-c { color: var(--cyan); } .c-y { color: var(--yellow); } .c-m { color: var(--magenta); } .c-d { color: var(--dim); } .c-w { color: var(--white); }
+  .caret { display: inline-block; width: .6em; background: var(--green); animation: pisca 1s steps(2, start) infinite; }
+  @keyframes pisca { to { visibility: hidden; } }
+
+  section { padding: 56px 0; border-top: 1px solid var(--line); }
+  h2 { color: var(--white); font-size: clamp(22px, 3.6vw, 30px); margin: 0 0 8px; }
+  h2::before { content: '» '; color: var(--green); }
+  .sub { color: var(--dim); margin: 0 0 28px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+  .card { border: 1px solid var(--line); border-radius: 10px; padding: 18px; background: var(--bg2); }
+  .card .ic { font-size: 24px; }
+  .card h3 { color: var(--white); font-size: 17px; margin: 8px 0 6px; }
+  .card p { margin: 0; font-size: 14px; color: var(--text); }
+  .card.vip { border-color: #5b2a57; background: linear-gradient(135deg, rgba(212,108,200,.10), rgba(97,214,214,.06)); }
+
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
+  .steps .card ol { margin: 10px 0 0; padding-left: 20px; font-size: 14px; }
+  .steps .card li { margin-bottom: 6px; }
+  code { color: var(--yellow); background: #1a1a1a; padding: 1px 6px; border-radius: 4px; }
+
+  .priv { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; list-style: none; padding: 0; margin: 0; }
+  .priv li { border-left: 3px solid var(--green2); padding: 6px 12px; background: var(--bg2); font-size: 14px; }
+
+  details { border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin-bottom: 10px; background: var(--bg2); }
+  summary { cursor: pointer; color: var(--white); }
+  details p { margin: 10px 0 2px; font-size: 14px; }
+
+  footer { border-top: 1px solid var(--line); padding: 30px 0 40px; font-size: 13px; color: var(--dim); }
+  footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; }
+  footer a { color: var(--dim); margin-right: 14px; }
+  footer a:hover { color: var(--green); }
+
+  @media (prefers-reduced-motion: reduce) { .banner, .caret { animation: none; } html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="logo" href="#">&gt;_ AKENETIC<span></span></a>
+    <nav>
+      <a class="opt" href="#recursos">recursos</a>
+      <a class="opt" href="#comecar">começar</a>
+      <a class="opt" href="#privacidade">privacidade</a>
+      <a href="../">abrir o app</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <div class="hero wrap">
+    <pre class="banner" aria-label="AKENETIC"><span class="l0"> █████╗ ██╗  ██╗███████╗███╗   ██╗███████╗████████╗██╗ ██████╗</span><span class="l1">██╔══██╗██║ ██╔╝██╔════╝████╗  ██║██╔════╝╚══██╔══╝██║██╔════╝</span><span class="l2">███████║█████╔╝ █████╗  ██╔██╗ ██║█████╗     ██║   ██║██║     </span><span class="l3">██╔══██║██╔═██╗ ██╔══╝  ██║╚██╗██║██╔══╝     ██║   ██║██║     </span><span class="l4">██║  ██║██║  ██╗███████╗██║ ╚████║███████╗   ██║   ██║╚██████╗</span><span class="l5">╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═══╝╚══════╝   ╚═╝   ╚═╝ ╚═════╝</span></pre>
+    <h1>Seu <em>terminal de bolso</em>.</h1>
+    <p class="lead">Chat criptografado, sala de RPG, fotos, vídeos e áudios — no celular e no pendrive, com a mesma conta. Grátis, sem anúncios e sem coletar seus dados.</p>
+    <div class="cta">
+      <a class="btn pri" href="../">▶ Abrir o app</a>
+      <a class="btn sec" href="akenetic-pendrive.zip" download>⬇ Baixar para pendrive</a>
+    </div>
+    <p class="note">App: Android e iPhone (pelo navegador, instala na tela inicial) · Pendrive: Windows 10/11</p>
+
+    <div class="demo" aria-hidden="true">
+      <div class="bar"><i></i><i></i><i></i><b>AKENETIC — sala: amigos</b></div>
+      <pre id="demo"></pre>
+    </div>
+  </div>
+
+  <section id="recursos">
+    <div class="wrap">
+      <h2>O que ele faz</h2>
+      <p class="sub">Tudo num lugar só, com o visual de terminal colorido, animações e sons.</p>
+      <div class="grid">
+        <div class="card"><div class="ic">🔒</div><h3>Chat criptografado</h3><p>Salas com código e senha. As mensagens saem do seu aparelho embaralhadas (AES-256): nem o servidor consegue ler.</p></div>
+        <div class="card"><div class="ic">🎲</div><h3>Sala de RPG</h3><p>Dados com animação (<code>/r 1d20+3</code>), fichas, vida, iniciativa, mestre, narração e rolagem secreta.</p></div>
+        <div class="card"><div class="ic">📷</div><h3>Fotos, vídeos e áudios</h3><p>Mande mídia direto no chat e grave mensagens de voz pelo celular. Tudo cifrado também.</p></div>
+        <div class="card"><div class="ic">📱</div><h3>Celular + pendrive</h3><p>Use o app no celular e o terminal no PC de qualquer lugar. A mesma conta funciona nos dois.</p></div>
+        <div class="card"><div class="ic">🔔</div><h3>Avisos e “digitando...”</h3><p>Notificações de mensagem nova e o aviso de quando alguém está escrevendo.</p></div>
+        <div class="card"><div class="ic">🛡️</div><h3>Ferramentas de pendrive</h3><p>Vacina contra vírus de atalho, backup de pastas, programas portáteis e ejetar com segurança.</p></div>
+        <div class="card"><div class="ic">🎨</div><h3>Temas e efeitos</h3><p>Vários temas de cores, chuva estilo Matrix, nome que entra em ondas e sons de terminal.</p></div>
+        <div class="card vip"><div class="ic">★</div><h3>Convites VIP</h3><p>Quem ganha um convite do criador libera o tema neon, cor no nome, mensagens com brilho e confete.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="comecar">
+    <div class="wrap">
+      <h2>Como começar</h2>
+      <p class="sub">Leva um minuto. Não precisa de e-mail nem telefone.</p>
+      <div class="steps">
+        <div class="card">
+          <h3>📱 No celular</h3>
+          <ol>
+            <li>Toque em <a href="../">Abrir o app</a>.</li>
+            <li>Crie sua conta (apelido + senha).</li>
+            <li>Instale: Android → <code>⋮</code> “Instalar app”; iPhone (Safari) → Compartilhar → “Adicionar à Tela de Início”.</li>
+            <li>Digite <code>chat</code> e combine código de sala e senha com um amigo.</li>
+          </ol>
+        </div>
+        <div class="card">
+          <h3>💻 No pendrive (Windows)</h3>
+          <ol>
+            <li><a href="akenetic-pendrive.zip" download>Baixe o .zip</a> e extraia no pendrive.</li>
+            <li>Abra <code>ABRIR TERMINAL.bat</code>.</li>
+            <li>Crie a conta — ou importe a do celular com <code>conta exportar</code>.</li>
+            <li>Digite <code>ajuda</code> para ver tudo. Ele se atualiza sozinho com <code>atualizar</code>.</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="privacidade">
+    <div class="wrap">
+      <h2>Privacidade de verdade</h2>
+      <p class="sub">O AKENETIC foi feito para não precisar saber nada sobre você.</p>
+      <ul class="priv">
+        <li>Sem e-mail, sem telefone, sem cadastro em servidor.</li>
+        <li>Sua conta fica no seu aparelho, cifrada com a sua senha.</li>
+        <li>Mensagens e arquivos cifrados antes de sair do aparelho.</li>
+        <li>Sem anúncios, sem rastreadores, sem cookies de terceiros.</li>
+        <li>Código aberto para quem quiser conferir.</li>
+        <li>Detalhes na <a href="privacidade.html">Política de Privacidade</a>.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="duvidas">
+    <div class="wrap">
+      <h2>Dúvidas</h2>
+      <details><summary>É grátis mesmo?</summary><p>Sim. É um projeto independente, sem anúncios e sem venda de nada.</p></details>
+      <details><summary>Esqueci minha senha. E agora?</summary><p>Como ninguém guarda sua senha (nem o criador), não dá para recuperar. Se você exportou a conta para outro aparelho, entre por lá e use <code>conta senha</code>. Senão, crie uma conta nova — suas notas e configurações continuam no aparelho.</p></details>
+      <details><summary>O Windows ou o antivírus reclamou do arquivo do pendrive.</summary><p>A versão de pendrive é um script (<code>.bat</code> e <code>.ps1</code>), e alguns antivírus desconfiam de qualquer script baixado da internet. O código é aberto e você pode ler antes de usar. Se confiar, clique com o botão direito no .zip → Propriedades → “Desbloquear” antes de extrair.</p></details>
+      <details><summary>O comando “hack” invade alguma coisa?</summary><p>Não. Ele é só uma animação de filme, de brincadeira. Nenhum comando do AKENETIC acessa sistemas de outras pessoas.</p></details>
+      <details><summary>Alguém pode ler minhas conversas?</summary><p>Só quem sabe o código e a senha da sala. As mensagens passam por um serviço de entrega (ntfy.sh) já embaralhadas, e ficam lá no máximo por algumas horas.</p></details>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div>© 2026 AKENETIC · projeto independente e gratuito.<br>Não afiliado a GitHub, Microsoft, Google ou ntfy.</div>
+    <div>
+      <a href="termos.html">Termos de Uso</a>
+      <a href="privacidade.html">Privacidade</a>
+      <a href="https://github.com/AkimistTemperor/akenetic" rel="noopener">Código no GitHub</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+// terminal de demonstracao: digita uma conversa de exemplo (respeita "reduzir movimento")
+(function () {
+  const lines = [
+    ['c-g', '» ', 'c-w', 'chat'],
+    ['c-d', '   ** conectado! as mensagens são criptografadas **'],
+    ['c-c', '[20:14] Ana', 'c-d', ' » ', 'c-w', 'bora jogar hoje?'],
+    ['c-y', '[20:14] ♦ Leo', 'c-d', ' » ', 'c-w', 'bora! cria sua ficha: /ficha'],
+    ['c-g', '» ', 'c-w', '/r 1d20+3'],
+    ['c-d', '[20:15] ', 'c-c', 'Ana', 'c-w', ' rolou 1d20+3: [20] +3 = ', 'c-y', '23', 'c-g', '   CRÍTICO!'],
+    ['c-m', '[20:15] ★ Bia', 'c-d', ' » ', 'c-m', 'mandou 🎤 audio-2015.webm'],
+    ['c-y', '   ~~~ NARRAÇÃO DO MESTRE ~~~'],
+    ['c-y', '   A porta range e uma sombra aparece...']
+  ];
+  const pre = document.getElementById('demo');
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const span = (cls, txt) => { const s = document.createElement('span'); s.className = cls; s.textContent = txt; return s; };
+  const caret = span('caret', ' ');
+  if (still) {
+    for (const l of lines) { for (let i = 0; i < l.length; i += 2) pre.appendChild(span(l[i], l[i + 1])); pre.appendChild(document.createTextNode('\n')); }
+    return;
+  }
+  let li = 0;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  (async function run() {
+    for (;;) {
+      pre.textContent = '';
+      for (li = 0; li < lines.length; li++) {
+        const l = lines[li];
+        for (let i = 0; i < l.length; i += 2) {
+          const s = span(l[i], ''); pre.appendChild(s); pre.appendChild(caret);
+          for (const ch of l[i + 1]) { s.textContent += ch; await sleep(l[1] === '» ' ? 55 : 14); }
+        }
+        pre.insertBefore(document.createTextNode('\n'), caret);
+        await sleep(450);
+      }
+      await sleep(4000);
+    }
+  })();
+})();
+</script>
+</body>
+</html>

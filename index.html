@@ -80,6 +80,7 @@
   #login .msg { min-height: 1.2em; text-align: center; font-size: 13px; }
   #login .links { display: flex; justify-content: center; gap: 14px; flex-wrap: wrap; font-size: 12px; }
   #login .links a { color: var(--a); cursor: pointer; text-decoration: underline; }
+  #boot .about { color: #767676; font-size: 12px; text-decoration: underline; }
   .blink { color: var(--p); animation: blink 1.1s steps(2, start) infinite; letter-spacing: .1em; }
   @keyframes blink { to { visibility: hidden; } }
   .chip.mini { padding: 1px 10px; margin-left: 8px; font-size: 12px; }
@@ -120,7 +121,7 @@
     <button id="send" type="submit" aria-label="Enviar">↵</button>
   </form>
 </div>
-<div id="boot"><div id="bootBanner"></div><div id="login"></div></div>
+<div id="boot"><div id="bootBanner"></div><div id="login"></div><a class="about" href="sobre/">o que é o AKENETIC? · termos · privacidade</a></div>
 <canvas id="matrix"></canvas>
 <div id="matrixHint">toque para sair</div>
 
@@ -1239,7 +1240,7 @@ $('#bar').addEventListener('submit', e => { e.preventDefault(); const v = inp.va
 addEventListener('resize', () => { document.querySelectorAll('.banner').forEach(b => b.style.fontSize = bannerSize(b.parentElement)); scroll(true); });
 
 // ------------------------------------------------------------------ inicializacao
-const APP_VERSION = '2.1';
+const APP_VERSION = '2.2';
 
 // ---------------- selo do criador e convites VIP (assinatura ECDSA P-256 do criador)
 // a chave publica e gravada aqui pelo 'criador criar' do AKENETIC premium

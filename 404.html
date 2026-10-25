@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>404 · AKENETIC</title>
+<meta name="theme-color" content="#0c0c0c">
+<style>
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #0c0c0c; color: #cccccc;
+    font: 16px/1.7 'Cascadia Mono', Consolas, Menlo, 'Roboto Mono', 'DejaVu Sans Mono', monospace; padding: 16px; box-sizing: border-box; }
+  .box { max-width: 520px; border: 3px double #13a10e; padding: 22px; }
+  .err { color: #e74856; }
+  a { color: #16c60c; }
+  .c { display: inline-block; width: .6em; background: #16c60c; animation: p 1s steps(2, start) infinite; }
+  @keyframes p { to { visibility: hidden; } }
+</style>
+</head>
+<body>
+  <div class="box">
+    <div class="err">[!] erro 404: página não encontrada</div>
+    <p>» <span id="path"></span><br>'esse caminho' não é reconhecido como um comando interno.</p>
+    <p>Tente: <a href="/akenetic/">abrir o app</a> · <a href="/akenetic/sobre/">conhecer o AKENETIC</a></p>
+    <p>» <span class="c">&nbsp;</span></p>
+  </div>
+  <script>document.getElementById('path').textContent = location.pathname;</script>
+</body>
+</html>
