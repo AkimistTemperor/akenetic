@@ -88,6 +88,18 @@
   #typing { display: none; padding: 2px 16px 0; color: #767676; font-style: italic; font-size: 12px; }
   #typing.on { display: block; }
   .chip.rec { background: #c50f1f; border-color: #e74856; color: #fff; animation: blink 1s steps(2, start) infinite; }
+  /* tema neon (VIP): brilho nos textos e o nome acendendo como letreiro */
+  body.neon .banner, body.neon #ps, body.neon .lt { text-shadow: 0 0 6px currentColor, 0 0 14px currentColor; }
+  body.neon .banner { animation: neonOn 1.8s linear 1; }
+  body.neon .chip { box-shadow: 0 0 6px var(--s); }
+  @keyframes neonOn { 0%, 8% { opacity: .15 } 9% { opacity: 1 } 12% { opacity: .2 } 15%, 22% { opacity: 1 } 24% { opacity: .3 } 30%, 100% { opacity: 1 } }
+  .vipcard { margin: 10px auto; max-width: 320px; padding: 16px; border-radius: 14px; border: 2px solid #b4009e; background: linear-gradient(135deg, rgba(180,0,158,.25), rgba(97,214,214,.18));
+    animation: vipGlow 1.2s ease-in-out infinite alternate; text-align: center; }
+  .vipcard .t { color: #61d6d6; letter-spacing: .15em; font-weight: 700; }
+  .vipcard .n { color: #f2f2f2; font-size: 20px; margin: 10px 0 4px; }
+  .vipcard .d { color: #cccccc; font-size: 12px; }
+  @keyframes vipGlow { from { box-shadow: 0 0 8px #b4009e; border-color: #b4009e; } to { box-shadow: 0 0 18px #61d6d6; border-color: #61d6d6; } }
+  #confetti { position: fixed; inset: 0; pointer-events: none; z-index: 9; }
   .narr { border-left: 3px solid #c19c00; background: rgba(193,156,0,.08); padding: 6px 10px; margin: 8px 0; }
   .aviso { border: 2px solid #f9f1a5; background: rgba(193,156,0,.12); padding: 10px 12px; margin: 10px 0; border-radius: 6px; animation: avisoPisca .35s steps(2, start) 6; }
   .aviso .t { color: #f9f1a5; font-weight: 700; display: block; margin-bottom: 6px; }
@@ -146,6 +158,7 @@ const col = c => C[c] || c;
 function applyTheme() {
   const r = document.documentElement.style;
   r.setProperty('--p', col(T.P)); r.setProperty('--s', col(T.S)); r.setProperty('--a', col(T.A)); r.setProperty('--t', col(T.T));
+  document.body.classList.toggle('neon', themeName === 'neon');
 }
 
 // ------------------------------------------------------------------ sons (bipes estilo Console.Beep)
@@ -174,7 +187,10 @@ const SFX = {
   alarm: [1500, 60, 1000, 60, 1500, 60, 1000, 60], msg: [1319, 45, 1760, 70],
   join: [784, 60, 1047, 90], leave: [1047, 60, 784, 90]
 };
-const sfx = n => play(SFX[n]);
+// no tema neon (VIP) os sons ficam "eletricos"
+const NEON_SFX = { enter: [1600, 12], tick: [3136, 8], ok: [1200, 30, 1800, 30, 2400, 70],
+  boot: [440, 60, 554, 60, 659, 60, 880, 60, 1109, 60, 1319, 220], bye: [1319, 60, 1109, 60, 880, 60, 659, 60, 440, 90, 220, 260] };
+const sfx = n => play(themeName === 'neon' && NEON_SFX[n] ? NEON_SFX[n] : SFX[n]);
 const buzz = ms => { try { navigator.vibrate && navigator.vibrate(ms); } catch (e) {} };
 
 // ------------------------------------------------------------------ saida de texto
@@ -486,19 +502,20 @@ async function runCommand(line) {
       return bot('Som ' + (soundOn ? 'ligado' : 'desligado') + '.');
     case 'conta': return accountCommand(arg);
     case 'vip': {
-      if (!arg) return bot(myVip ? `Você é VIP: ${myVip.n} ★ (convite de ${myVip.d}). Use: tema ouro` : 'Ganhou um convite VIP? Cole aqui: vip AKNVIP.xxxx');
+      if (/^cart[aã]o$/i.test(arg)) return vipCard();
+      if (!arg) return bot(myVip ? `Você é VIP: ${myVip.n} ★ (convite de ${myVip.d}). Use: tema neon  |  vip cartao` : 'Ganhou um convite VIP? Cole aqui: vip AKNVIP.xxxx');
       if (!CREATOR_PUB) return err('Este app ainda não conhece a chave do criador. Feche e abra de novo mais tarde.');
       await loadVipRevoked();
       await spin('Conferindo a assinatura do criador...', 600);
       const info = await verifyVip(arg);
       if (!info) return err('Convite inválido ou cancelado pelo criador.');
       if (account && String(info.n).toLowerCase() !== account.nome.toLowerCase()) bot(`Atenção: o convite é para "${info.n}", mas sua conta é "${account.nome}". O selo só aparece com o nome do convite.`);
-      store.set('vip', arg.trim()); myVip = { ...info, token: arg.trim() }; THEMES.ouro = GOLD_THEME;
+      store.set('vip', arg.trim()); myVip = { ...info, token: arg.trim() }; THEMES.neon = NEON_THEME;
       const b = el('div', 'aviso');
       b.appendChild(el('span', 't', `★ BEM-VINDO, VIP ${info.n}!`));
-      b.appendChild(seg(`Liberado: tema ouro. No chat seu nome aparece com ★ (use o apelido "${info.n}").`, 'White'));
+      b.appendChild(seg(`Liberado: tema neon (digite: tema neon). No chat: /cor rosa, /brilho texto, /confete. Seu nome aparece com ★ (use o apelido "${info.n}"). Seu cartão: vip cartao`, 'White'));
       out.appendChild(b); scroll(true);
-      play([523, 80, 659, 80, 784, 80, 1047, 120, 1568, 280]); buzz([80, 40, 160]);
+      play(NEON_SFX.boot); buzz([80, 40, 160]);
       return;
     }
     case 'instalar':
@@ -561,7 +578,7 @@ async function payload(type, text = '', extra) {
   chat.own.add(id);
   const o = { i: id, n: chat.name, t: type, m: text };
   if (extra !== undefined) o.x = extra;
-  if (myVip) o.v = myVip.token;
+  if (myVip) { o.v = myVip.token; const cor = store.get('cor', ''); if (cor) o.c = cor; }
   return protect(chat.K, JSON.stringify(o));
 }
 // noCache: o servidor nao guarda (usado no "digitando...", que nao precisa ir pro historico)
@@ -574,7 +591,10 @@ async function sendChat(type, text = '', extra, noCache) {
   } catch (e) { return false; }
 }
 
+// cores que VIP/criador escolhem pro nome (mesmos valores do PC)
+const NAME_COLORS = { rosa: 'Magenta', ciano: 'Cyan', verde: 'Green', amarelo: 'Yellow', vermelho: 'Red', azul: 'Blue', branco: 'White', laranja: 'DarkYellow' };
 const nameColor = n => {
+  if (chat && chat.colors[n]) return chat.colors[n];
   if (chat && chat.badges[n] === 'creator') return 'Yellow';
   const pal = ['Cyan', 'Yellow', 'Magenta', 'Green', 'Red', 'Blue', 'DarkYellow', 'DarkCyan']; let s = 0; for (const c of n) s += c.charCodeAt(0); return pal[s % pal.length];
 };
@@ -582,7 +602,40 @@ const hhmm = d => d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-di
 const notice = (t, c = 'DarkGray') => println(['   ** ' + t + ' **', c]);
 // ♦ = criador verificado, ★ = VIP verificado (os dois por assinatura digital do criador)
 const badgeMark = name => { const b = chat && chat.badges[name]; return b === 'creator' ? ['♦ ', 'White'] : b === 'vip' ? ['★ ', 'Yellow'] : ['', 'White']; };
-const chatLine = (time, name, text, c) => println([`[${time}] `, 'DarkGray'], badgeMark(name), [name, c], [' » ', T.S], [text, 'White']);
+function chatLine(time, name, text, c, fx) {
+  const d = println([`[${time}] `, 'DarkGray'], badgeMark(name), [name, c], [' » ', T.S]);
+  if (fx === 'brilho') {
+    // mensagem arco-iris, letra por letra
+    const rb = ['Red', 'Yellow', 'Green', 'Cyan', 'Blue', 'Magenta']; let i = 0;
+    for (const ch of text) { const s = seg(ch, rb[i % 6]); s.style.textShadow = '0 0 6px currentColor'; d.appendChild(s); if (ch !== ' ') i++; }
+  } else d.appendChild(seg(text, 'White'));
+  return d;
+}
+// confete caindo na tela toda (~2,5s)
+function confetti() {
+  const cv = el('canvas'); cv.id = 'confetti'; document.body.appendChild(cv);
+  const ctx = cv.getContext('2d'), dpr = devicePixelRatio || 1;
+  cv.width = innerWidth * dpr; cv.height = innerHeight * dpr; ctx.scale(dpr, dpr);
+  const cols = ['#e74856', '#f9f1a5', '#16c60c', '#61d6d6', '#3b78ff', '#b4009e', '#f2f2f2'];
+  const ps = Array.from({ length: 120 }, () => ({ x: Math.random() * innerWidth, y: -20 - Math.random() * innerHeight * .5,
+    vx: (Math.random() - .5) * 3, vy: 2 + Math.random() * 4, r: Math.random() * 6, c: cols[Math.random() * cols.length | 0], s: 4 + Math.random() * 5 }));
+  const t0 = performance.now();
+  (function frame(t) {
+    ctx.clearRect(0, 0, innerWidth, innerHeight);
+    for (const p of ps) { p.x += p.vx; p.y += p.vy; p.r += .1; ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.r); ctx.fillStyle = p.c; ctx.fillRect(-p.s / 2, -p.s / 4, p.s, p.s / 2); ctx.restore(); }
+    if (t - t0 < 2600) requestAnimationFrame(frame); else cv.remove();
+  })(t0);
+  play([523, 60, 659, 60, 784, 60, 1047, 60, 1319, 140]); buzz([40, 30, 40, 30, 80]);
+}
+function vipCard() {
+  if (!myVip) return err('Só para VIPs. Ganhou um convite? vip <convite>');
+  const c = el('div', 'vipcard');
+  c.appendChild(el('div', 't', '★ AKENETIC VIP ★'));
+  c.appendChild(el('div', 'n', myVip.n.toUpperCase()));
+  c.appendChild(el('div', 'd', `membro desde ${myVip.d}  ·  nº ${myVip.id}`));
+  out.appendChild(c); scroll(true);
+  play([1200, 30, 1500, 30, 1800, 30, 2400, 90]);
+}
 
 // ---------------- arquivos
 const fmtSize = b => b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.ceil(b / 1024) + ' KB';
@@ -903,6 +956,9 @@ async function handleItem(o) {
   const name = cut(p.n, 16) || '???';
   // selo vale so para esta mensagem (um impostor com o mesmo nome nao herda)
   chat.badges[name] = await badgeOf(p, name);
+  // cor escolhida e efeitos so valem com selo verificado
+  if (chat.badges[name] && Object.values(NAME_COLORS).includes(p.c)) chat.colors[name] = p.c; else delete chat.colors[name];
+  const fx = chat.badges[name] && p.x && ['brilho', 'confete'].includes(p.x.fx) ? p.x.fx : '';
   // o historico grava tambem as nossas mensagens (quando o eco volta do servidor)
   const lt = logTextOf(p, name);
   if (lt) await logChat(o.id, ddmm(new Date(o.time * 1000)), lt);
@@ -914,8 +970,8 @@ async function handleItem(o) {
   if (!live && !chat.hadHistory) { chat.hadHistory = true; println(['──── mensagens anteriores ────', T.S]); }
   switch (String(p.t)) {
     case 'msg':
-      chatLine(time, name, clean(p.m), nameColor(name));
-      if (live) { sfx('msg'); buzz(60); notify(`${name}: ${cut(p.m, 90)}`); }
+      chatLine(time, name, clean(p.m), nameColor(name), fx);
+      if (live) { if (fx === 'confete') confetti(); else { sfx('msg'); buzz(60); } notify(`${name}: ${cut(p.m, 90)}`); }
       break;
     case 'file': {
       const fname = cut(p.m, 120) || 'arquivo', kind = fileKind(fname, x && x.k);
@@ -1004,12 +1060,13 @@ async function openChat() {
   if (pass.length < 4) return err('A senha precisa de pelo menos 4 caracteres.');
   store.set('nome', name); store.set('sala', room);
   await spin('Gerando chave secreta...', 400);
-  chat = { name, room, K: await deriveKeys(room.toLowerCase(), pass), own: new Set(), seen: new Set(), people: new Set(), logIds: new Set(), typing: {}, lastTyping: 0, badges: {},
+  chat = { name, room, K: await deriveKeys(room.toLowerCase(), pass), own: new Set(), seen: new Set(), people: new Set(), logIds: new Set(), typing: {}, lastTyping: 0, badges: {}, colors: {},
            sheets: {}, inits: {}, mySheet: loadSheet(), master: '', blobs: {},
            live: false, hadHistory: false, err: false, chain: Promise.resolve(), es: null };
   for (const [id] of loadHist()) chat.logIds.add(id);
   if (myVip) {
     chat.badges[name] = 'vip';
+    if (store.get('cor', '')) chat.colors[name] = store.get('cor', '');
     if (myVip.n.toLowerCase() !== name.toLowerCase()) setTimeout(() => notice(`dica: seu selo ★ só aparece com o apelido "${myVip.n}"`, 'Yellow'), 600);
   }
   loadVipRevoked();
@@ -1036,6 +1093,7 @@ async function leaveChat() {
 }
 async function chatHelp() {
   const rows = [['CHAT'], ['/midia', 'foto ou vídeo (câmera/galeria)'], ['/audio', 'grava mensagem de voz'], ['/enviar', 'manda arquivo (ou botão 📎)'], ['/quem', 'pessoas na sala'], ['/limpar  /som', 'limpa / sons'], ['/historico', 'conversas antigas'], ['/avisos', 'liga avisos de mensagem'], ['/sair', 'volta pro terminal'],
+    ['VIP'], ['/cor rosa', 'cor do seu nome pra todos'], ['/brilho texto', 'mensagem arco-íris'], ['/confete', 'confete na tela de todo mundo'],
     ['RPG'], ['/r 1d20+3', 'rola dados pra todos verem'], ['/ficha', 'cria/edita sua ficha'], ['/fichas', 'ficha de todos'], ['/vida -5  +3', 'dano / cura'],
     ['/iniciativa', 'rola e mostra a ordem (+2 bônus)'], ['/mestre', 'vira o mestre'], ['/narrar txt', 'narração (mestre)'], ['/secreto 1d20', 'rolagem escondida (mestre)']];
   for (const [k, v] of rows) { if (!v) println(['══ ' + k + ' ══', T.S]); else println([k.padEnd(14), T.P], [v, T.T]); await sleep(10); }
@@ -1088,6 +1146,21 @@ async function chatSubmit(text) {
     case '/fichas': return showSheets();
     case '/historico': case '/history': return showHistory(arg);
     case '/avisos': return askNotifications();
+    case '/cor': case '/brilho': case '/confete': {
+      if (!myVip) return notice('exclusivo para VIP (ganhou um convite? vip <convite>)', 'Yellow');
+      if (cmd === '/cor') {
+        const v = NAME_COLORS[arg.toLowerCase()];
+        if (!v) return notice('cores: ' + Object.keys(NAME_COLORS).join(', '), 'Yellow');
+        store.set('cor', v); chat.colors[me] = v;
+        return println(['   ** seu nome agora fica ', 'DarkGray'], [arg.toLowerCase(), v], [' pra todo mundo **', 'DarkGray']);
+      }
+      const fx = cmd.slice(1), msg = arg || (fx === 'confete' ? '🎉 CONFETE! 🎉' : '');
+      if (!msg) return notice('use: /brilho texto', 'Yellow');
+      chatLine(now, me, msg, nameColor(me), fx); scroll(true);
+      if (fx === 'confete') confetti();
+      if (!await sendChat('msg', msg, { fx })) notice('NÃO enviado (sem internet?)', 'Red');
+      return;
+    }
     case '/vida': {
       if (!chat.mySheet) return notice('crie sua ficha primeiro: /ficha', 'Yellow');
       const m = /^([+-]?)(\d{1,4})$/.exec(arg);
@@ -1131,7 +1204,7 @@ function setChips(list) {
 }
 function setMode(m) {
   mode = m;
-  setChips(m === 'chat' ? CHAT_CHIPS : cmdChips());
+  setChips(m === 'chat' ? (myVip ? [['🎉 confete', '/confete'], ...CHAT_CHIPS] : CHAT_CHIPS) : cmdChips());
   inp.placeholder = m === 'chat' ? 'mensagem...' : 'digite um comando...';
 }
 function ask(label, def = '', secret = false) {
@@ -1166,12 +1239,13 @@ $('#bar').addEventListener('submit', e => { e.preventDefault(); const v = inp.va
 addEventListener('resize', () => { document.querySelectorAll('.banner').forEach(b => b.style.fontSize = bannerSize(b.parentElement)); scroll(true); });
 
 // ------------------------------------------------------------------ inicializacao
-const APP_VERSION = '2.0';
+const APP_VERSION = '2.1';
 
 // ---------------- selo do criador e convites VIP (assinatura ECDSA P-256 do criador)
 // a chave publica e gravada aqui pelo 'criador criar' do AKENETIC premium
 const CREATOR_PUB = 'FHUwZCVfp/Atn/LK5QX0Mc+KfzGcHATPZVCRZgAN4n4umA8i1qa4gitwfu9lqdEMbvSZi02w0WmsGPe83zjz+w==';
-const GOLD_THEME = { P: 'Yellow', S: 'DarkYellow', A: 'White', T: 'Gray', G: ['White', 'Yellow', 'Yellow', 'DarkYellow', 'DarkYellow', 'DarkRed'] };
+// tema exclusivo de quem tem VIP (o ouro e so do criador)
+const NEON_THEME = { P: 'Magenta', S: 'DarkMagenta', A: 'Cyan', T: 'Gray', G: ['Cyan', 'Magenta', 'Cyan', 'Magenta', 'DarkCyan', 'DarkMagenta'] };
 let creatorKey = null, vipRevoked = [], myVip = null;
 async function getCreatorKey() {
   if (!CREATOR_PUB) return null;
@@ -1205,8 +1279,8 @@ async function restoreVip() {
   await loadVipRevoked();
   const info = await verifyVip(tok);
   if (!info) { store.set('vip', ''); return err('Seu convite VIP foi cancelado pelo criador.'); }
-  myVip = { ...info, token: tok }; THEMES.ouro = GOLD_THEME;
-  if (store.get('tema', '') === 'ouro' && themeName !== 'ouro') { themeName = 'ouro'; T = THEMES.ouro; applyTheme(); }
+  myVip = { ...info, token: tok }; THEMES.neon = NEON_THEME;
+  if (store.get('tema', '') === 'neon' && themeName !== 'neon') { themeName = 'neon'; T = THEMES.neon; applyTheme(); }
 }
 // novidades.json e publicado pelo 'site publicar' do premium; mostra uma vez para quem tem essa versao
 async function checkNovidades() {

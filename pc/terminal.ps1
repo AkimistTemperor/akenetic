@@ -20,7 +20,7 @@ $NotesFile  = Join-Path $Root 'notas.txt'
 $ConfigFile = Join-Path $Root 'config.txt'
 # a edicao premium e liberada pelo arquivo premium.key, que o 'compartilhar' nunca copia
 $IsPremium  = Test-Path -LiteralPath (Join-Path $Root 'premium.key')
-$Version    = '2.0'
+$Version    = '2.1'
 # de onde o comando 'atualizar' baixa a versao nova (publicada pelo 'site publicar' do premium)
 $SiteBase   = 'https://akimisttemperor.github.io/akenetic/'
 $UpdateBase = "$($SiteBase)pc/"
@@ -83,12 +83,16 @@ $Themes = @{
     arcoiris = @{ P='Yellow';  S='Magenta';     A='Cyan';   T='Gray'; G=@('Red','Yellow','Green','Cyan','Blue','Magenta') }
 }
 $GoldTheme = @{ P='Yellow'; S='DarkYellow'; A='White'; T='Gray'; G=@('White','Yellow','Yellow','DarkYellow','DarkYellow','DarkRed') }
-if ($IsPremium -or $IsVip) { $Themes.ouro = $GoldTheme }
+# ouro = so o criador; neon = VIP (o criador tambem pode usar)
+$NeonTheme = @{ P='Magenta'; S='DarkMagenta'; A='Cyan'; T='Gray'; G=@('Cyan','Magenta','Cyan','Magenta','DarkCyan','DarkMagenta') }
+if ($IsPremium) { $Themes.ouro = $GoldTheme }
+if ($IsPremium -or $IsVip) { $Themes.neon = $NeonTheme }
 $script:ThemeName = 'verde'
 $script:ChatName  = $env:USERNAME
 $script:ChatRoom  = ''
 $script:AvisoSeen = ''
 $script:NovSeen   = ''
+$script:MyColor   = ''
 $proConfigured    = $false
 if (Test-Path $ConfigFile) {
     foreach ($l in Get-Content $ConfigFile -Encoding UTF8) {
@@ -98,6 +102,7 @@ if (Test-Path $ConfigFile) {
         if ($l -match '^sala=(.+)$') { $script:ChatRoom = $Matches[1] }
         if ($l -match '^aviso=(.+)$') { $script:AvisoSeen = $Matches[1] }
         if ($l -match '^novidades=(.+)$') { $script:NovSeen = $Matches[1] }
+        if ($l -match '^cor=(\w+)$') { $script:MyColor = $Matches[1] }
         if ($l -eq 'pro=1') { $proConfigured = $true }
     }
 }
@@ -111,14 +116,17 @@ function Save-Config {
       "nome=$script:ChatName",
       "sala=$script:ChatRoom",
       "aviso=$script:AvisoSeen",
-      "novidades=$script:NovSeen")
+      "novidades=$script:NovSeen",
+      "cor=$script:MyColor")
     if ($IsPremium) { $lines += 'pro=1' }
     $lines | Set-Content $ConfigFile -Encoding UTF8
 }
 if ($IsPremium -and -not $proConfigured) { Save-Config }
 
 # modo ouro: premium + tema ouro troca animacoes, sons, prompt e o matrix
-function Test-GoldMode { ($IsPremium -or $script:IsVip) -and $script:ThemeName -eq 'ouro' }
+function Test-GoldMode { $IsPremium -and $script:ThemeName -eq 'ouro' }
+# modo neon: VIP (ou criador) + tema neon -> letreiro que acende, sons eletricos, chuva neon
+function Test-NeonMode { ($IsPremium -or $script:IsVip) -and $script:ThemeName -eq 'neon' }
 
 # ----------------------------------------------------------------- sons
 function Play([int[]]$notes) {
@@ -130,6 +138,15 @@ function Play([int[]]$notes) {
 }
 
 function Sfx([string]$name) {
+    if (Test-NeonMode) {
+        switch ($name) {
+            'enter' { Play 1600,12; return }
+            'tick'  { Play 3136,8; return }
+            'ok'    { Play 1200,30,1800,30,2400,70; return }                                        # zap eletrico
+            'boot'  { Play 440,60,554,60,659,60,880,60,1109,60,1319,220; return }                    # sintetizador
+            'bye'   { Play 1319,60,1109,60,880,60,659,60,440,90,220,260; return }
+        }
+    }
     if (Test-GoldMode) {
         switch ($name) {
             'enter' { Play 1760,15; return }
@@ -197,7 +214,10 @@ function Show-Bar([string]$label, [int]$ms = 600, [int]$width = 30) {
     for ($i = 0; $i -le $width; $i++) {
         Write-Host "`r  $($label.PadRight(28))" -NoNewline -ForegroundColor $script:T.T
         Write-Host '[' -NoNewline -ForegroundColor $script:T.S
-        if ((Test-GoldMode) -and $i -gt 0 -and $i -lt $width) {
+        if ((Test-NeonMode) -and $i -gt 0) {
+            # barra neon: ciano e rosa alternando
+            for ($q = 0; $q -lt $i; $q++) { Write-Host '█' -NoNewline -ForegroundColor @('Cyan', 'Magenta')[$q % 2] }
+        } elseif ((Test-GoldMode) -and $i -gt 0 -and $i -lt $width) {
             # barra de ouro com uma faisca branca na ponta
             Write-Host ('█' * ($i - 1)) -NoNewline -ForegroundColor $script:T.P
             Write-Host '▓' -NoNewline -ForegroundColor White
@@ -314,7 +334,56 @@ function Show-GoldBanner($colors) {
     Cursor $true
 }
 
+# Modo neon: o nome aparece apagado (tubo cinza), "pega no tranco" piscando com zumbido,
+# depois cada letra da uma falhada antes de firmar, e um brilho branco corre por cima.
+function Show-NeonBanner($colors) {
+    $pad = Center-Pad $BannerWidth
+    Cursor $false
+    Write-Host ''
+    for ($r = 0; $r -lt 6; $r++) { Write-Host '' }
+    $top = [Console]::CursorTop - 6
+    $draw = {
+        param($on, [int]$from = 0, [int]$to = $BannerWidth)
+        for ($r = 0; $r -lt 6; $r++) {
+            [Console]::SetCursorPosition($pad + $from, $top + $r)
+            [Console]::ForegroundColor = $(if ($on) { $colors[$r] } else { 'DarkGray' })
+            [Console]::Write($BannerLines[$r].Substring($from, $to - $from))
+        }
+    }
+    & $draw $false
+    Start-Sleep -Milliseconds 300
+    foreach ($on in $true, $false, $true, $false, $false, $true, $false, $true) {
+        & $draw $on
+        if ($on) { Play (100 + $Rnd.Next(40)),35 } else { Start-Sleep -Milliseconds (40 + $Rnd.Next(90)) }
+    }
+    # cada letra falha e firma (posicoes das letras de AKENETIC)
+    $x = 0
+    foreach ($ch in 'AKENETIC'.ToCharArray()) {
+        $w = $Font[[string]$ch][0].Length
+        & $draw $false $x ($x + $w); Start-Sleep -Milliseconds 45
+        & $draw $true  $x ($x + $w); Play (1400 + $Rnd.Next(600)),10
+        $x += $w
+    }
+    for ($s = -6; $s -le $BannerWidth + 6; $s += 3) {
+        for ($r = 0; $r -lt 6; $r++) {
+            $ln = $BannerLines[$r]
+            $a1 = [math]::Max(0, [math]::Min($BannerWidth, $s - 2 + $r)); $a2 = [math]::Max(0, [math]::Min($BannerWidth, $s + 2 + $r))
+            [Console]::SetCursorPosition($pad, $top + $r)
+            [Console]::ForegroundColor = $colors[$r]; [Console]::Write($ln.Substring(0, $a1))
+            [Console]::ForegroundColor = 'White';     [Console]::Write($ln.Substring($a1, $a2 - $a1))
+            [Console]::ForegroundColor = $colors[$r]; [Console]::Write($ln.Substring($a2))
+        }
+        Start-Sleep -Milliseconds 12
+    }
+    Play 880,50,1319,50,1760,120
+    [Console]::ForegroundColor = 'Gray'
+    [Console]::SetCursorPosition(0, $top + 6)
+    Write-Host ''
+    Cursor $true
+}
+
 function Show-Banner([switch]$Animated, $colors = $script:T.G) {
+    if ($Animated -and (Test-NeonMode)) { try { Show-NeonBanner $colors; return } catch {} }
     if ($Animated -and (Test-GoldMode)) { try { Show-GoldBanner $colors; return } catch {} }
     $pad = Center-Pad $BannerWidth
     if (-not $Animated) {
@@ -416,7 +485,7 @@ if ($IsPremium) {
     $Commands.Insert($Commands.Count - 1, 'criador [criar]', '[PREMIUM] sua chave de criador (selo verificado)')
     $Commands.Insert($Commands.Count - 1, 'vip criar <nome>', '[PREMIUM] gera um convite VIP assinado')
     $Commands.Insert($Commands.Count - 1, 'vip lista | revogar <n>', '[PREMIUM] convites feitos / cancela um')
-    $Commands['tema <nome>'] = 'verde | azul | roxo | vermelho | arcoiris | ouro'
+    $Commands['tema <nome>'] = 'verde | azul | roxo | vermelho | arcoiris | ouro | neon'
 }
 
 function Show-Help {
@@ -519,6 +588,7 @@ function Matrix {
     # no modo ouro vira "chuva de ouro"
     $mid = 'Green'; $tail = 'DarkGreen'
     if (Test-GoldMode) { $mid = 'Yellow'; $tail = 'DarkYellow'; $glyphs = '0123456789$*+♦·$$'.ToCharArray() }
+    if (Test-NeonMode) { $mid = 'Magenta'; $tail = 'DarkCyan'; $glyphs = '01☼*+=<>/\|~░▒'.ToCharArray() }
     while (-not [Console]::KeyAvailable -and (Get-Date) -lt $end) {
         for ($x = 0; $x -lt $w; $x += 2) {
             $cy = $y[$x]
@@ -929,6 +999,7 @@ function New-ChatPayload([string]$type, [string]$text = '', $extra = $null) {
     # selo do criador: assinatura sobre "id|nome|tipo|texto"; VIP: o convite vai junto
     if ($script:CreatorSigner) { $o.cs = Sign-Text "$id|$($script:ChatName)|$type|$text" }
     if ($script:VipToken) { $o.v = $script:VipToken }
+    if ($script:MyColor -and ($script:VipToken -or $script:CreatorSigner)) { $o.c = $script:MyColor }
     Protect-Msg ($o | ConvertTo-Json -Compress -Depth 6)
 }
 
@@ -1051,7 +1122,11 @@ function Save-ChatFile([string]$url, [string]$name) {
 
 function Clean([string]$s) { ($s -replace '[\x00-\x1F\x7F]', '').Trim() }
 
+# cores que VIP/criador podem escolher pro nome (o valor e o que vai na mensagem)
+$NameColorList = [ordered]@{ rosa = 'Magenta'; ciano = 'Cyan'; verde = 'Green'; amarelo = 'Yellow'; vermelho = 'Red'; azul = 'Blue'; branco = 'White'; laranja = 'DarkYellow' }
+
 function Name-Color([string]$n) {
+    if ($script:NameColors -and $script:NameColors[$n]) { return $script:NameColors[$n] }
     if ($script:Badges -and $script:Badges[$n] -eq 'creator') { return 'Yellow' }
     $pal = 'Cyan', 'Yellow', 'Magenta', 'Green', 'Red', 'Blue', 'DarkYellow', 'DarkCyan'
     $s = 0; foreach ($c in $n.ToCharArray()) { $s += [int]$c }
@@ -1110,14 +1185,36 @@ function Draw-Input {
     Write-Host $shown -NoNewline -ForegroundColor White
 }
 
-function Write-ChatLine([string]$time, [string]$name, [string]$text, $nameColor) {
+function Write-Rainbow([string]$text) {
+    $cols = 'Red', 'Yellow', 'Green', 'Cyan', 'Blue', 'Magenta'; $i = 0
+    foreach ($ch in $text.ToCharArray()) { Write-Host $ch -NoNewline -ForegroundColor $cols[$i % 6]; if ($ch -ne ' ') { $i++ } }
+    Write-Host ''
+}
+
+function Show-Confetti {
+    $w = 76; try { $w = [math]::Max(20, [Console]::WindowWidth - 4) } catch {}
+    $cols = 'Red', 'Yellow', 'Green', 'Cyan', 'Magenta', 'Blue', 'White'
+    $chars = '*', '+', '·', 'o', 'x', '~'
+    for ($line = 0; $line -lt 3; $line++) {
+        Write-Host '  ' -NoNewline
+        for ($x = 0; $x -lt $w; $x++) {
+            if ($Rnd.Next(4) -eq 0) { Write-Host $chars[$Rnd.Next($chars.Count)] -NoNewline -ForegroundColor $cols[$Rnd.Next($cols.Count)] }
+            else { Write-Host ' ' -NoNewline }
+        }
+        Write-Host ''
+        Play (1000 + $line * 300),30
+    }
+    Play 523,60,659,60,784,60,1047,60,1319,140
+}
+
+function Write-ChatLine([string]$time, [string]$name, [string]$text, $nameColor, [string]$fx = '') {
     Write-Host "  [$time] " -NoNewline -ForegroundColor DarkGray
     $badge = ''; if ($script:Badges) { $badge = $script:Badges[$name] }
     if ($badge -eq 'creator') { Write-Host '♦ ' -NoNewline -ForegroundColor White }
     elseif ($badge -eq 'vip') { Write-Host '☼ ' -NoNewline -ForegroundColor Yellow }
     Write-Host $name -NoNewline -ForegroundColor $nameColor
     Write-Host ' » ' -NoNewline -ForegroundColor $script:T.S
-    Write-Host $text -ForegroundColor White
+    if ($fx -eq 'brilho') { Write-Rainbow $text } else { Write-Host $text -ForegroundColor White }
 }
 
 function Write-ChatNotice([string]$text, $color = 'DarkGray') {
@@ -1291,6 +1388,9 @@ function Handle-ChatItem([string]$raw) {
     $name = Cut ([string]$p.n) 16; if (-not $name) { $name = '???' }
     # selo vale so para esta mensagem (um impostor com o mesmo nome nao herda)
     $script:Badges[$name] = Get-Badge $p $name
+    # cor escolhida e efeitos so valem com selo verificado
+    if ($script:Badges[$name] -and $NameColorList.Values -contains [string]$p.c) { $script:NameColors[$name] = [string]$p.c } else { $script:NameColors.Remove($name) }
+    $fx = ''; if ($script:Badges[$name] -and $p.x -and $p.x.fx -in 'brilho', 'confete') { $fx = [string]$p.x.fx }
     # o historico grava tambem as nossas mensagens (quando o eco volta do servidor)
     $logText = switch ([string]$p.t) {
         'anuncio' { "ANUNCIO ($name): $(Clean ([string]$p.m))" }
@@ -1317,8 +1417,10 @@ function Handle-ChatItem([string]$raw) {
         'typing' { if ($live) { $script:Typing[$name] = (Get-Date).AddSeconds(7) } }
         'msg' {
             $m = Clean ([string]$p.m)
-            Write-ChatLine $time $name $m (Name-Color $name)
-            if ($live) { Play 1319,45,1760,70; Show-DesktopNotice "$($name): $(Cut $m 120)" }
+            Write-ChatLine $time $name $m (Name-Color $name) $fx
+            if ($live -and $fx -eq 'confete') { Show-Confetti }
+            elseif ($live) { Play 1319,45,1760,70 }
+            if ($live) { Show-DesktopNotice "$($name): $(Cut $m 120)" }
         }
         'file' {
             $fname = Cut ([string]$p.m) 120; $size = 0; if ($p.x) { $size = [long]$p.x.s }
@@ -1432,6 +1534,10 @@ function Chat-Help {
         @('/mestre', 'vira o mestre da sala'),
         @('/narrar <texto>', 'narracao em destaque (mestre)'),
         @('/anuncio <texto>', 'anuncio dourado verificado (so o criador)'),
+        @('VIP', ''),
+        @('/cor <nome>', 'cor do seu nome: rosa ciano verde amarelo...'),
+        @('/brilho <texto>', 'mensagem colorida pra todos'),
+        @('/confete [texto]', 'solta confete na tela de todo mundo'),
         @('/secreto 1d20', 'rolagem escondida (mestre)'),
         @('/iniciativa limpar', 'zera a ordem de turnos')
     )
@@ -1508,6 +1614,24 @@ function Chat-Command([string]$text) {
             $script:ChatMaster = $me
             Write-ChatNotice 'voce agora e o MESTRE da sala' Yellow
             [void](Send-Chat 'master'); break
+        }
+        '^/(cor|brilho|confete)$' {
+            if (-not ($script:VipToken -or $script:CreatorSigner)) { Write-ChatNotice 'exclusivo para VIP (ganhou um convite? vip <convite>)' Yellow; break }
+            $what = $Matches[1]
+            if ($what -eq 'cor') {
+                $k = "$arg".ToLower()
+                if (-not $NameColorList.Contains($k)) { Write-ChatNotice ('cores: ' + ($NameColorList.Keys -join ', ')) Yellow; break }
+                $script:MyColor = $NameColorList[$k]; $script:NameColors[$me] = $script:MyColor; Save-Config
+                Write-Host '          ** seu nome agora fica ' -NoNewline -ForegroundColor DarkGray
+                Write-Host $k -NoNewline -ForegroundColor $script:MyColor
+                Write-Host ' pra todo mundo **' -ForegroundColor DarkGray
+                break
+            }
+            $msg = $arg; if (-not $msg) { if ($what -eq 'confete') { $msg = '*** CONFETE! ***' } else { Write-ChatNotice 'use: /brilho texto' Yellow; break } }
+            Write-ChatLine $now $me $msg (Name-Color $me) $what
+            if ($what -eq 'confete') { Show-Confetti }
+            if (-not (Send-Chat 'msg' $msg @{ fx = $what })) { Write-ChatNotice 'NAO enviado (sem internet?)' Red }
+            break
         }
         '^/anuncio$' {
             if (-not $script:CreatorSigner) { Write-ChatNotice 'so o criador, com o selo ativo (entre no chat com a senha mestra)' Yellow; break }
@@ -1603,6 +1727,8 @@ function Open-ChatRoom {
     $script:ChatNotify       = $true
     $script:Badges           = @{}
     if ($script:CreatorSigner) { $script:Badges[$name] = 'creator' } elseif ($script:VipToken) { $script:Badges[$name] = 'vip' }
+    $script:NameColors = @{}
+    if ($script:MyColor -and ($script:CreatorSigner -or $script:VipToken)) { $script:NameColors[$name] = $script:MyColor }
     Open-ChatLog
 
     $queue = New-Object 'System.Collections.Concurrent.ConcurrentQueue[string]'
@@ -2317,12 +2443,14 @@ function Redeem-Vip([string]$token) {
     }
     Set-Content -LiteralPath $VipFile -Value $token.Trim() -Encoding ASCII
     $script:VipToken = $token.Trim(); $script:VipInfo = $info; $script:IsVip = $true
-    $Themes.ouro = $GoldTheme
+    $Themes.neon = $NeonTheme
     Write-Host ''
     Box @("☼  BEM-VINDO, VIP $($info.n)!  ☼", '',
-          'Liberado:  tema ouro  (com os efeitos dourados)',
-          "No chat seu nome aparece com ☼ (use o apelido '$($info.n)')") 'Yellow' 'White'
-    Play 523,80,659,80,784,80,1047,120,1568,280
+          'Liberado:  tema neon  (letreiro que acende, sons eletricos)',
+          'No chat:   /cor rosa   /brilho texto   /confete',
+          "           seu nome aparece com ☼ (use o apelido '$($info.n)')",
+          'Seu cartao: vip cartao') 'Magenta' 'White'
+    Play 440,60,554,60,659,60,880,60,1109,60,1319,220
 }
 
 function Vip([string]$arg) {
@@ -2331,7 +2459,7 @@ function Vip([string]$arg) {
     switch ("$sub".ToLower()) {
         '' {
             if ($IsPremium) { Bot 'Voce e o criador. Crie convites com: vip criar <nome>'; return }
-            if ($script:IsVip) { Bot "Voce e VIP: $($script:VipInfo.n) (convite de $($script:VipInfo.d)). Use: tema ouro" }
+            if ($script:IsVip) { Bot "Voce e VIP: $($script:VipInfo.n) (convite de $($script:VipInfo.d)). Use: tema neon   |   vip cartao" }
             else { Bot 'Ganhou um convite VIP? Cole aqui: vip AKNVIP.xxxx' }
         }
         'criar' {
@@ -2349,6 +2477,20 @@ function Vip([string]$arg) {
                   'No PC:   vip <convite>        No app:   vip <convite>') 'Yellow' 'White'
             Write-Host "  $token" -ForegroundColor DarkGray
             Sfx ok
+        }
+        { $_ -in 'cartao', 'cartão' } {
+            if (-not ($IsPremium -or $script:IsVip)) { Err 'So para VIPs. Ganhou um convite? vip <convite>'; return }
+            $n = [string]$script:VipInfo.n; $d = [string]$script:VipInfo.d; $id = [string]$script:VipInfo.id; $title = '☼  AKENETIC  VIP  ☼'
+            if ($IsPremium) { $n = [string]$script:Account.nome; $d = [string]$script:Account.criada; $id = 'CRIADOR'; $title = '♦  AKENETIC  CRIADOR  ♦' }
+            $lines = @($title, '', $n.ToUpper(), "membro desde $d", "n. $id")
+            Write-Host ''
+            Box $lines 'Magenta' 'White'
+            $pos = [Console]::CursorTop - ($lines.Count + 2)
+            for ($b = 0; $b -lt 8; $b++) {
+                try { [Console]::SetCursorPosition(0, $pos); Box $lines @('Cyan', 'Magenta')[$b % 2] 'White' } catch {}
+                Play (1200 + $b * 120),25
+                Start-Sleep -Milliseconds 90
+            }
         }
         'lista' {
             if (-not $IsPremium) { Err 'So o criador ve a lista.'; return }
@@ -2839,9 +2981,13 @@ function Update-Terminal {
 
 function Write-Prompt {
     Write-Host ''
-    $gold = Test-GoldMode
+    $gold = Test-GoldMode; $neon = Test-NeonMode
     Write-Host '  ┌─[' -NoNewline -ForegroundColor $script:T.S
-    if ($gold) {
+    if ($neon) {
+        Write-Host '☼ ' -NoNewline -ForegroundColor Cyan
+        Write-Host "AKENETIC $GoldName" -NoNewline -ForegroundColor Magenta
+        Write-Host ' ☼' -NoNewline -ForegroundColor Cyan
+    } elseif ($gold) {
         Write-Host '♦ ' -NoNewline -ForegroundColor White
         Write-Host "AKENETIC $GoldName" -NoNewline -ForegroundColor $script:T.P
         Write-Host ' ♦' -NoNewline -ForegroundColor White
@@ -2851,7 +2997,8 @@ function Write-Prompt {
     Write-Host ']─[' -NoNewline -ForegroundColor $script:T.S
     Write-Host (Get-Date -Format 'HH:mm') -NoNewline -ForegroundColor DarkGray
     Write-Host ']' -ForegroundColor $script:T.S
-    if ($gold) { Write-Host '  └─♦ ' -NoNewline -ForegroundColor $script:T.P }
+    if ($neon) { Write-Host '  └─☼ ' -NoNewline -ForegroundColor Cyan }
+    elseif ($gold) { Write-Host '  └─♦ ' -NoNewline -ForegroundColor $script:T.P }
     else { Write-Host '  └─» ' -NoNewline -ForegroundColor $script:T.S }
     [Console]::ForegroundColor = 'White'
 }
@@ -2861,7 +3008,14 @@ Set-Location "$Drive\"
 Clear-Host
 Cursor $false
 Write-Host ''
-if (Test-GoldMode) {
+if (Test-NeonMode) {
+    Type-Out '  Ligando os neons do AKENETIC VIP...' $script:T.P 22
+    Write-Host ''
+    Show-Bar 'Aquecendo os tubos' 500
+    Show-Bar 'Ajustando o brilho' 400
+    Show-Bar 'Verificando convite VIP' 400
+    Show-Bar 'Sintonizando o sintetizador' 300
+} elseif (Test-GoldMode) {
     Type-Out "  Inicializando AKENETIC $GoldName..." $script:T.P 22
     Write-Host ''
     Show-Bar 'Abrindo o cofre' 500
@@ -3001,7 +3155,10 @@ while ($true) {
             Show-Bar 'Desligando AKENETIC' 500
             Sfx bye
             Clear-Host
-            if (Test-GoldMode) {
+            if (Test-NeonMode) {
+                Show-Banner -colors @('DarkCyan', 'DarkMagenta', 'DarkCyan', 'DarkMagenta', 'DarkCyan', 'DarkMagenta')
+                Type-Center '☼  Ate a proxima, VIP!  ☼' 'Magenta' 30
+            } elseif (Test-GoldMode) {
                 Show-Banner -colors @('DarkYellow', 'DarkYellow', 'DarkYellow', 'DarkYellow', 'DarkRed', 'DarkRed')
                 if ($IsPremium) { Type-Center '♦  Ate a proxima, criador!  ♦' $script:T.P 30 }
                 else { Type-Center '☼  Ate a proxima, VIP!  ☼' $script:T.P 30 }
